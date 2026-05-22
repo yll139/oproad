@@ -305,6 +305,11 @@ case "$cmd" in
             exit 1
         fi
         parent_dir="$(abs_dir "${5:-$REPO_ROOT/projects}")"
+        # 强制要求 parent_dir 必须是 $REPO_ROOT/projects
+        if [ "$parent_dir" != "$REPO_ROOT/projects" ]; then
+            echo "ERROR: 项目只能在 $REPO_ROOT/projects 目录下创建。" >&2
+            exit 1
+        fi
         run_container "$parent_dir" /workspace \
             oproad-runner new "$2" "$3" "$4" /workspace
         ;;

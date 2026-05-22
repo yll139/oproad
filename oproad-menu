@@ -58,9 +58,7 @@ menu() {
     while true; do
         clear 2>/dev/null || true
         echo "=========================================="
-        echo "  oproad interactive menu"
-        echo "  Project: $project"
-        echo "  Path:    $project_path"
+        echo "  oproad console menu"
         echo "=========================================="
         echo ""
         echo "  1) Build Docker image"

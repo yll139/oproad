@@ -35,12 +35,16 @@ The install script will:
 4. Show next steps
 
 
-**Important:** All projects must be created inside the `projects` directory. If you use the command line (`oproad new ...`), the project will be automatically placed under `projects/` in your current working directory.
+
+
+**Important:** All projects must be created and managed inside the `oproad/projects` directory. The `oproad new` command only allows creating new projects under `oproad/projects`, and all VS Code tasks and related operations must also point to projects in this directory.
+
+
 
 After installation:
 
 ```bash
-./oproad new nangate45 mydesign 1.0   # Create a project (will be placed in ./projects/mydesign)
+./oproad new nangate45 mydesign 1.0   # Project will only be created under ./projects/mydesign
 ```
 
 
@@ -53,17 +57,21 @@ through a **two-layer mechanism**:
 
 ```
 Host (edit files in VS Code)
-    │  docker bind mount (-v)
-    ▼
+   │
+   │  docker bind mount (-v)
+   ▼
 Container /project/
-    │  rsync (sync_project_to_orfs)
-    ▼
+   │
+   │  rsync (sync_project_to_orfs)
+   ▼
 Container /OpenROAD-flow-scripts/flow/designs/   ← ORFS toolchain reads/writes here
-    │  rsync (sync_orfs_to_project)
-    ▼
+   │
+   │  rsync (sync_orfs_to_project)
+   ▼
 Container /project/
-    │  docker bind mount (-v)
-    ▼
+   │
+   │  docker bind mount (-v)
+   ▼
 Host (view results, reports, logs)
 ```
 
@@ -71,13 +79,35 @@ Host (view results, reports, logs)
 
 ## VS Code Integration
 
-VS Code is recommended for the best experience. The repository includes built-in task definitions and interactive menus. Open the project in VS Code and use **Terminal → Run Task...** or the Taskbar extension for one-click operations. See [docs-vscode.md](./docs-vscode.md) for more details.
+VS Code is recommended for the best experience. This repository provides built-in task definitions, workspace settings, and interactive menus.
+
+**How to use with VS Code:**
+
+1. **Open the Workspace:**
+    - Open the repository folder in VS Code, or for best results, open the `oproad.code-workspace` file (File → Open Workspace... → select `oproad.code-workspace`).
+    - This will automatically load recommended settings, tasks, and extensions.
+
+2. **Run Tasks:**
+    - Use the menu: `Terminal → Run Task...` to see all `oproad:*` tasks (build image, new project, simulate, synthesize, report, implement, clean, delete, shell, menu, etc).
+    - For one-click task buttons, install the [Taskbar](https://marketplace.visualstudio.com/items?itemName=spikespaz.vscode-taskbar) extension (VS Code will prompt you to install recommended extensions).
+
+3. **Workspace Defaults:**
+    - The default workspace directory is the cloned `oproad` folder.
+    - The default project parent path is `projects`.
+    - The default project name is `test` (see `oproad.code-workspace`).
+
+4. **More Information:**
+    - See [docs-vscode.md](./docs-vscode.md) for details.
+
+Example directory structure:
+
+```
 ├── reports/
 │   └── <platform>/<design>/  ← Timing and area reports
 ├── logs/
 │   └── <platform>/<design>/  ← Tool logs
 └── objects/
-    └── <platform>/<design>/  ← Intermediate build artifacts
+     └── <platform>/<design>/  ← Intermediate build artifacts
 ```
 
 ---
@@ -112,23 +142,19 @@ resolved platform are written to `.oproad-config` so later commands reuse them.
 
 ### 2. Create A Project
 
-Projects are automatically created under the `projects/` directory:
 
-```bash
-./oproad new <platform> <design> <freq_GHz>
-```
 
-This is the only step that specifies the platform/process. A typical first
-project is:
+All projects must be created under the `oproad/projects` directory. For example:
 
 ```bash
 ./oproad new nangate45 mydesign 1.0
+# The result directory will be oproad/projects/mydesign
 ```
 
-Which creates:
+Example directory structure:
 
 ```text
-projects/mydesign/
+oproad/projects/mydesign/
 ├── .asic_project          ← Platform, design name, frequency
 ├── src/rtl/               ← Your Verilog RTL source files
 ├── src/tb/                ← Testbenches
@@ -214,16 +240,16 @@ The VS Code tasks call the same host-side wrapper and use the same Docker image.
 They provide button-style entries for image build, project creation, simulation,
 synthesis, report, implementation, clean, delete, and shell.
 
-#### Interactive Menu (Zero Setup)
 
-For an interactive button-style menu in the terminal, run:
+#### Console Menu (Zero Setup)
+
+For a simple interactive console menu in the terminal, run:
 
 ```bash
 ./oproad menu
 ```
 
-Or in VS Code, run **Terminal → Run Task... → oproad: menu**. The menu shows
-numbered options for all operations and lets you switch between projects.
+Or in VS Code, run **Terminal → Run Task... → oproad: menu**. This menu provides numbered options for all main operations and lets you switch between projects. It does not display project paths or workspace information—it's just a convenient console launcher for common tasks.
 
 This works immediately with no extensions or additional setup.
 
