@@ -34,10 +34,13 @@ The install script will:
 3. Detect VS Code and create a workspace file with task buttons
 4. Show next steps
 
+
+**Important:** All projects must be created inside the `projects` directory. If you use the command line (`oproad new ...`), the project will be automatically placed under `projects/` in your current working directory.
+
 After installation:
 
 ```bash
-./oproad new nangate45 mydesign 1.0   # Create a project
+./oproad new nangate45 mydesign 1.0   # Create a project (will be placed in ./projects/mydesign)
 ./oproad menu                          # Interactive menu for all operations
 ```
 
