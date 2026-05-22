@@ -1,0 +1,38 @@
+OpenROAD HEAD-HASH-NOTFOUND 
+Features included (+) or not (-): +Charts +GPU +GUI +Python
+This program is licensed under the BSD-3 license. See the LICENSE file for details.
+Components of this program may be licensed under more restrictive licenses which must be honored.
+[INFO ORD-0030] Using 8 thread(s).
+Deleted 0 routing obstructions
+[INFO RCX-0431] Defined process_corner X with ext_model_index 0
+[INFO RCX-0029] Defined extraction corner X
+[INFO RCX-0435] Reading extraction model file /OpenROAD-flow-scripts/flow/platforms/nangate45/rcx_patterns.rules ...
+[INFO RCX-0436] RC segment generation test (max_merge_res 50.0) ...
+[INFO RCX-0040] Final 256 rc segments
+[INFO RCX-0439] Coupling Cap extraction test ...
+[INFO RCX-0440] Coupling threshhold is 0.1000 fF, coupling capacitance less than 0.1000 fF will be grounded.
+[INFO RCX-0442] 54% of 446 wires extracted
+[INFO RCX-0442] 100% of 446 wires extracted
+[INFO RCX-0045] Extract 119 nets, 366 rsegs, 366 caps, 293 ccs
+[INFO RCX-0443] 119 nets finished
+IR drop analysis for power nets is skipped because PWR_NETS_VOLTAGES is undefined
+IR drop analysis for ground nets is skipped because GND_NETS_VOLTAGES is undefined
+Cell type report:
+  Fill cell                               694
+  Tap cell                                 90
+  Buffer                                    4
+  Clock buffer                              4
+  Timing Repair Buffer                     28
+  Inverter                                  6
+  Sequential cell                           9
+  Multi-Input combinational cell           33
+  Total                                   868
+Report metrics stage 6, finish...
+
+==========================================================================
+finish report_design_area
+--------------------------------------------------------------------------
+Design area 168 u^2 4% utilization.
+[WARNING GUI-0076] QStandardPaths: wrong permissions on runtime directory /tmp/runtime-root, 0777 instead of 0700
+[WARNING GUI-0076] QStandardPaths: wrong permissions on runtime directory /tmp/runtime-root, 0777 instead of 0700
+Elapsed time: 0:01.88[h:]min:sec. CPU time: user 1.78 sys 0.09 (99%). Peak memory: 261656KB.

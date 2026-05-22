@@ -89,7 +89,7 @@ VS Code is recommended for the best experience. This repository provides built-i
 
 2. **Run Tasks:**
     - Use the menu: `Terminal → Run Task...` to see all `oproad:*` tasks (build image, new project, simulate, synthesize, report, implement, clean, delete, shell, menu, etc).
-    - For one-click task buttons, install the [Taskbar](https://marketplace.visualstudio.com/items?itemName=spikespaz.vscode-taskbar) extension (VS Code will prompt you to install recommended extensions).
+    - For one-click task buttons, install the [Taskbar](https://marketplace.visualstudio.com/items?itemName=philippscheer.taskbar) extension (VS Code will prompt you to install recommended extensions).
 
 3. **Workspace Defaults:**
     - The default workspace directory is the cloned `oproad` folder.
@@ -254,7 +254,7 @@ Or in VS Code, run **Terminal → Run Task... → oproad: menu**. This menu prov
 This works immediately with no extensions or additional setup.
 
 VS Code itself lists tasks through menus rather than showing task buttons by
-default. This repository recommends the `Taskbar` extension; after installing
+default. This repository recommends the `philippscheer.taskbar` extension; after installing
 the recommended extensions, open the Explorer sidebar and use the Taskbar view to
 run the `oproad:*` tasks from clickable entries.
 
@@ -267,7 +267,7 @@ VS Code and use:
 Terminal -> Run Task...
 ```
 
-For visible task buttons, install the recommended `Taskbar` extension when VS
+For visible task buttons, install the recommended `philippscheer.taskbar` extension when VS
 Code prompts for workspace recommendations. The Taskbar view reads
 `.vscode/tasks.json` and shows the `oproad:*` tasks in the sidebar.
 

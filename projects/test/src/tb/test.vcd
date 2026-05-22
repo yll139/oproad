@@ -1,0 +1,104 @@
+$date
+	Fri May 22 08:22:43 2026
+$end
+$version
+	Icarus Verilog
+$end
+$timescale
+	1ps
+$end
+$scope module tb_test $end
+$var wire 9 ! y [8:0] $end
+$var reg 8 " a [7:0] $end
+$var reg 8 # b [7:0] $end
+$var reg 1 $ clk $end
+$var reg 1 % rst_n $end
+$scope module dut $end
+$var wire 8 & a [7:0] $end
+$var wire 8 ' b [7:0] $end
+$var wire 1 $ clk $end
+$var wire 1 % rst_n $end
+$var reg 9 ( y [8:0] $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0
+$dumpvars
+b0 (
+b0 '
+b0 &
+0%
+0$
+b0 #
+b0 "
+b0 !
+$end
+#5000
+1$
+#10000
+0$
+#15000
+1$
+#20000
+0$
+1%
+#25000
+1$
+#30000
+0$
+b10100 #
+b10100 '
+b1010 "
+b1010 &
+#35000
+b11110 !
+b11110 (
+1$
+#40000
+0$
+b111 #
+b111 '
+b101 "
+b101 &
+#45000
+b1100 !
+b1100 (
+1$
+#50000
+0$
+b110010 #
+b110010 '
+b1100100 "
+b1100100 &
+#55000
+b10010110 !
+b10010110 (
+1$
+#60000
+0$
+b1 #
+b1 '
+b11111111 "
+b11111111 &
+#65000
+b100000000 !
+b100000000 (
+1$
+#70000
+0$
+#75000
+1$
+#80000
+0$
+#85000
+1$
+#90000
+0$
+#95000
+1$
+#100000
+0$
+#105000
+1$
+#110000
+0$

@@ -1419,14 +1419,31 @@ set_max_transition ${MAX_TRANSITION} [current_design]
 set_max_fanout 20 [current_design]
 EOF
 
-if [ "$PLATFORM" = "nangate15" ]; then
-    FLOORPLAN_CONFIG=$(cat <<'EOF_FLOORPLAN'
-# Tiny Nangate15 demos can auto-floorplan too small for the default PDN grid.
-# Use an explicit minimum core so MINT4/MINT5 stripes fit during implement.
+PDN_MIN_DIE_AREA=""
+PDN_MIN_CORE_AREA=""
+PDN_MIN_PLACE_DENSITY=""
+
+case "$PLATFORM" in
+    nangate15)
+        PDN_MIN_DIE_AREA="0 0 80 80"
+        PDN_MIN_CORE_AREA="8 7.68 72 72.96"
+        PDN_MIN_PLACE_DENSITY="0.30"
+        ;;
+    nangate45)
+        PDN_MIN_DIE_AREA="0 0 80 80"
+        PDN_MIN_CORE_AREA="8 8.4 72 71.4"
+        PDN_MIN_PLACE_DENSITY="0.20"
+        ;;
+esac
+
+if [ -n "$PDN_MIN_DIE_AREA" ]; then
+    FLOORPLAN_CONFIG=$(cat <<EOF_FLOORPLAN
+# Tiny demo designs can auto-floorplan too small for the default PDN grid.
+# Use an explicit minimum core so power straps fit during implement.
 export CORE_UTILIZATION =
-export DIE_AREA  = 0 0 80 80
-export CORE_AREA = 8 7.68 72 72.96
-export PLACE_DENSITY    = 0.30
+export DIE_AREA  = ${PDN_MIN_DIE_AREA}
+export CORE_AREA = ${PDN_MIN_CORE_AREA}
+export PLACE_DENSITY    = ${PDN_MIN_PLACE_DENSITY}
 EOF_FLOORPLAN
 )
 else
