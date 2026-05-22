@@ -1,4 +1,4 @@
-ARG ORFS_BASE_IMAGE=openroad/orfs:v3.0-1305-g0aa3fe5d
+ARG ORFS_BASE_IMAGE=openroad/orfs:latest
 ARG ORFS_BASE_PLATFORM=linux/amd64
 
 FROM --platform=${ORFS_BASE_PLATFORM} ${ORFS_BASE_IMAGE}

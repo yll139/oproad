@@ -33,8 +33,7 @@ resolve_orfs_root() {
         "${SCRIPT_DIR}/../OpenROAD-flow-scripts/flow" \
         "$(pwd)/flow" \
         "$(pwd)/../flow" \
-        "/Users/coding/Documents/ASIC/tools/OpenROAD-flow-scripts/flow" \
-        "/opt/homebrew/flow"
+        "/OpenROAD-flow-scripts/flow"
     do
         if [ -d "$candidate" ] && [ -f "$candidate/Makefile" ] && [ -d "$candidate/platforms" ]; then
             cd "$candidate" 2>/dev/null && pwd
@@ -249,8 +248,8 @@ sync_project_to_orfs() {
     mkdir -p "$ORFS_ROOT/designs/src/${DESIGN}"
     mkdir -p "$ORFS_ROOT/designs/${PLATFORM}/${DESIGN}"
 
-    rsync -a --delete "$PROJECT_ROOT/src/" "$ORFS_ROOT/designs/src/${DESIGN}/"
-    rsync -a --delete "$PROJECT_ROOT/platform/${PLATFORM}/${DESIGN}/" "$ORFS_ROOT/designs/${PLATFORM}/${DESIGN}/"
+    rsync -a --delete "$PROJECT_ROOT/src/" "$ORFS_ROOT/designs/src/${DESIGN}/" || { echo "ERROR: rsync src failed" >&2; return 1; }
+    rsync -a --delete "$PROJECT_ROOT/platform/${PLATFORM}/${DESIGN}/" "$ORFS_ROOT/designs/${PLATFORM}/${DESIGN}/" || { echo "ERROR: rsync platform config failed" >&2; return 1; }
 
     echo "  synced src      -> $ORFS_ROOT/designs/src/${DESIGN}"
     echo "  synced platform -> $ORFS_ROOT/designs/${PLATFORM}/${DESIGN}"
@@ -266,28 +265,28 @@ sync_orfs_to_project() {
     mkdir -p "$PROJECT_ROOT/objects/${PLATFORM}/${DESIGN}"
 
     if [ -d "$ORFS_ROOT/results/${PLATFORM}/${DESIGN}" ]; then
-        rsync -a --delete "$ORFS_ROOT/results/${PLATFORM}/${DESIGN}/" "$PROJECT_ROOT/results/${PLATFORM}/${DESIGN}/"
+        rsync -a --delete "$ORFS_ROOT/results/${PLATFORM}/${DESIGN}/" "$PROJECT_ROOT/results/${PLATFORM}/${DESIGN}/" || echo "  [WARN] rsync results failed" >&2
         echo "  synced results/${PLATFORM}/${DESIGN}"
     else
         echo "  skipped results/${PLATFORM}/${DESIGN}"
     fi
 
     if [ -d "$ORFS_ROOT/reports/${PLATFORM}/${DESIGN}" ]; then
-        rsync -a --delete "$ORFS_ROOT/reports/${PLATFORM}/${DESIGN}/" "$PROJECT_ROOT/reports/${PLATFORM}/${DESIGN}/"
+        rsync -a --delete "$ORFS_ROOT/reports/${PLATFORM}/${DESIGN}/" "$PROJECT_ROOT/reports/${PLATFORM}/${DESIGN}/" || echo "  [WARN] rsync reports failed" >&2
         echo "  synced reports/${PLATFORM}/${DESIGN}"
     else
         echo "  skipped reports/${PLATFORM}/${DESIGN}"
     fi
 
     if [ -d "$ORFS_ROOT/logs/${PLATFORM}/${DESIGN}" ]; then
-        rsync -a --delete "$ORFS_ROOT/logs/${PLATFORM}/${DESIGN}/" "$PROJECT_ROOT/logs/${PLATFORM}/${DESIGN}/"
+        rsync -a --delete "$ORFS_ROOT/logs/${PLATFORM}/${DESIGN}/" "$PROJECT_ROOT/logs/${PLATFORM}/${DESIGN}/" || echo "  [WARN] rsync logs failed" >&2
         echo "  synced logs/${PLATFORM}/${DESIGN}"
     else
         echo "  skipped logs/${PLATFORM}/${DESIGN}"
     fi
 
     if [ -d "$ORFS_ROOT/objects/${PLATFORM}/${DESIGN}" ]; then
-        rsync -a --delete "$ORFS_ROOT/objects/${PLATFORM}/${DESIGN}/" "$PROJECT_ROOT/objects/${PLATFORM}/${DESIGN}/"
+        rsync -a --delete "$ORFS_ROOT/objects/${PLATFORM}/${DESIGN}/" "$PROJECT_ROOT/objects/${PLATFORM}/${DESIGN}/" || echo "  [WARN] rsync objects failed" >&2
         echo "  synced objects/${PLATFORM}/${DESIGN}"
     else
         echo "  skipped objects/${PLATFORM}/${DESIGN}"

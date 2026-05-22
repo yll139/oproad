@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# oproad menu - interactive TUI for oproad commands
+# Usage: ./oproad menu
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+REPO_ROOT="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+PROJECTS_DIR="$REPO_ROOT/projects"
+
+# Find existing projects
+list_projects() {
+    local result=()
+    if [ -d "$PROJECTS_DIR" ]; then
+        for d in "$PROJECTS_DIR"/*/; do
+            [ -d "$d" ] && result+=("$(basename "$d")")
+        done
+    fi
+    printf '%s\n' "${result[@]}"
+}
+
+select_project() {
+    local projects=()
+    while IFS= read -r p; do
+        [ -n "$p" ] && projects+=("$p")
+    done < <(list_projects)
+
+    if [ "${#projects[@]}" -eq 0 ]; then
+        echo ""
+        return
+    fi
+
+    echo ""
+    echo "Existing projects in $PROJECTS_DIR:"
+    for i in "${!projects[@]}"; do
+        printf "  %d) %s\n" $((i+1)) "${projects[$i]}"
+    done
+    echo ""
+    printf "Select project (1-%d) or press Enter for default [test]: " "${#projects[@]}"
+    read -r sel
+    if [ -z "$sel" ]; then
+        echo "test"
+    elif [[ "$sel" =~ ^[0-9]+$ ]] && [ "$sel" -ge 1 ] && [ "$sel" -le "${#projects[@]}" ]; then
+        echo "${projects[$((sel-1))]}"
+    else
+        echo "$sel"
+    fi
+}
+
+menu() {
+    local project="${1:-test}"
+    local project_path="$PROJECTS_DIR/$project"
+
+    while true; do
+        clear 2>/dev/null || true
+        echo "=========================================="
+        echo "  oproad interactive menu"
+        echo "  Project: $project"
+        echo "  Path:    $project_path"
+        echo "=========================================="
+        echo ""
+        echo "  1) Build Docker image"
+        echo "  2) New project"
+        echo "  3) Simulate"
+        echo "  4) Synthesize"
+        echo "  5) Report"
+        echo "  6) Implement"
+        echo "  7) Clean"
+        echo "  8) Delete project"
+        echo "  9) Shell (container)"
+        echo "  p) Switch project"
+        echo "  q) Quit"
+        echo ""
+        printf "Choice: "
+        read -r choice
+
+        case "$choice" in
+            1)
+                echo ""
+                echo ">>> Building Docker image..."
+                "$REPO_ROOT/oproad" build-image
+                echo ""
+                printf "Press Enter to continue..."
+                read -r
+                ;;
+            2)
+                echo ""
+                printf "Platform (e.g. nangate45): "
+                read -r platform
+                printf "Design name: "
+                read -r design
+                printf "Frequency (GHz): "
+                read -r freq
+                echo ""
+                echo ">>> Creating project..."
+                if "$REPO_ROOT/oproad" new "$platform" "$design" "$freq" "$PROJECTS_DIR"; then
+                    project="$design"
+                    project_path="$PROJECTS_DIR/$project"
+                fi
+                echo ""
+                printf "Press Enter to continue..."
+                read -r
+                ;;
+            3)
+                echo ""
+                echo ">>> Simulating $project..."
+                "$REPO_ROOT/oproad" sim "$project_path"
+                echo ""
+                printf "Press Enter to continue..."
+                read -r
+                ;;
+            4)
+                echo ""
+                echo ">>> Synthesizing $project..."
+                "$REPO_ROOT/oproad" synth "$project_path"
+                echo ""
+                printf "Press Enter to continue..."
+                read -r
+                ;;
+            5)
+                echo ""
+                echo ">>> Report for $project..."
+                "$REPO_ROOT/oproad" report "$project_path"
+                echo ""
+                printf "Press Enter to continue..."
+                read -r
+                ;;
+            6)
+                echo ""
+                echo ">>> Implementing $project..."
+                "$REPO_ROOT/oproad" implement "$project_path"
+                echo ""
+                printf "Press Enter to continue..."
+                read -r
+                ;;
+            7)
+                echo ""
+                echo ">>> Cleaning $project..."
+                "$REPO_ROOT/oproad" clean "$project_path"
+                echo ""
+                printf "Press Enter to continue..."
+                read -r
+                ;;
+            8)
+                echo ""
+                printf "Delete project '$project'? This cannot be undone! (yes/no): "
+                read -r confirm
+                if [ "$confirm" = "yes" ]; then
+                    "$REPO_ROOT/oproad" delete "$project_path"
+                    project="test"
+                    project_path="$PROJECTS_DIR/$project"
+                else
+                    echo "Skipped."
+                fi
+                echo ""
+                printf "Press Enter to continue..."
+                read -r
+                ;;
+            9)
+                echo ""
+                echo ">>> Opening container shell..."
+                "$REPO_ROOT/oproad" shell "$REPO_ROOT"
+                echo ""
+                printf "Press Enter to continue..."
+                read -r
+                ;;
+            p|P)
+                project=$(select_project)
+                [ -z "$project" ] && project="test"
+                project_path="$PROJECTS_DIR/$project"
+                ;;
+            q|Q)
+                echo "Bye."
+                exit 0
+                ;;
+            *)
+                echo "Invalid choice."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# If called with a project name as argument, use it
+default_project="${1:-test}"
+menu "$default_project"

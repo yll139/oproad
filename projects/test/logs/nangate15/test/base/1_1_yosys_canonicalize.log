@@ -1,0 +1,18 @@
+1. Executing Verilog-2005 frontend: ./designs/src/test/rtl/test.v
+2. Executing Liberty frontend: ./objects/nangate15/test/base/lib/NanGate_15nm_OCL_typical.lib
+3. Executing Verilog-2005 frontend: /OpenROAD-flow-scripts/flow/platforms/nangate15/cells_clkgate.v
+Using ABC speed script.
+Extracting clock period from SDC file: ./results/nangate15/test/base/clock_period.txt
+Setting clock period to 1000.0000
+4. Executing HIERARCHY pass (managing design hierarchy).
+5. Executing AST frontend in derive mode using pre-parsed AST for module `\test'.
+5.1. Analyzing design hierarchy..
+5.2. Analyzing design hierarchy..
+6. Executing OPT_CLEAN pass (remove unused cells and wires).
+Warning: Ignoring module test because it contains processes (run 'proc' command first).
+7. Executing RTLIL backend.
+Warnings: 1 unique messages, 1 total
+End of script. Logfile hash: c726c4ca93, CPU: user 0.13s system 0.01s, MEM: 27.51 MB peak
+Yosys 0.44 (git sha1 UNKNOWN, clang++ 14.0.0-1ubuntu1.1 -fPIC -O3)
+Time spent: 38% 2x read_liberty (0 sec), 34% 1x hierarchy (0 sec), ...
+Elapsed time: 0:00.15[h:]min:sec. CPU time: user 0.13 sys 0.00 (96%). Peak memory: 31644KB.

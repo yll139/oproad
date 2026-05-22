@@ -8,18 +8,28 @@ while [ -L "$SOURCE" ]; do
     [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
 done
 REPO_ROOT="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+CONFIG_FILE="$REPO_ROOT/.oproad-config"
+
+if [ -f "$CONFIG_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$CONFIG_FILE"
+    set +a
+fi
 
 IMAGE="${OPROAD_IMAGE:-oproad:latest}"
-PLATFORM="${OPROAD_DOCKER_PLATFORM:-linux/amd64}"
+PLATFORM_SETTING="${OPROAD_DOCKER_PLATFORM:-auto}"
+ORFS_BASE_IMAGE="${OPROAD_ORFS_BASE_IMAGE:-openroad/orfs:latest}"
 
 usage() {
     cat <<'EOF'
 Usage:
-  oproad build-image
+  oproad build-image [orfs_version_or_image] [docker_platform]
   oproad new       <platform> <design> <freq_GHz> [parent_dir]
   oproad sim       [project_dir]
   oproad synth     [project_dir]
   oproad implement [project_dir]
+  oproad run       [project_dir]
   oproad report    [project_dir]
   oproad clean     [project_dir]
   oproad delete    [project_dir]
@@ -30,8 +40,14 @@ project's .asic_project file.
 
 Environment:
   OPROAD_IMAGE            Docker image tag, default: oproad:latest
-  OPROAD_DOCKER_PLATFORM  Docker platform, default: linux/amd64
+  OPROAD_ORFS_BASE_IMAGE  ORFS base image, default: openroad/orfs:latest
+  OPROAD_DOCKER_PLATFORM  Docker platform, default: auto
   OPROAD_FINISH_MODE      auto, light, full, or skip
+
+Examples:
+  oproad build-image latest auto
+  oproad build-image v3.0-1305-g0aa3fe5d linux/amd64
+  oproad build-image openroad/orfs:latest linux/arm64
 EOF
 }
 
@@ -39,6 +55,35 @@ require_docker() {
     if ! command -v docker >/dev/null 2>&1; then
         echo "ERROR: Docker is required but was not found on PATH." >&2
         exit 127
+    fi
+}
+
+ensure_docker_logged_in() {
+    # Prerequisite: Docker Desktop must be running and logged in.
+    if docker info >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if [ -t 0 ]; then
+        echo "Docker Desktop is not running or not logged in. Please:" >&2
+        echo "  1. Start Docker Desktop" >&2
+        echo "  2. Log in to Docker Hub (docker login)" >&2
+        echo "  3. Then retry this command" >&2
+        echo "Run 'docker login' now? (y/N)" >&2
+        read -r _ans || _ans="n"
+        case "$_ans" in
+            y|Y|yes|Yes|1)
+                docker login || { echo "docker login failed; check credentials and retry." >&2; exit 1; }
+                ;;
+            *)
+                echo "Aborted. Please ensure Docker Desktop is running and logged in, then retry." >&2
+                exit 1
+                ;;
+        esac
+    else
+        echo "ERROR: Docker Desktop must be running and logged in (docker login)." >&2
+        echo "Start Docker Desktop, log in, then retry." >&2
+        exit 1
     fi
 }
 
@@ -61,6 +106,54 @@ tty_args() {
     fi
 }
 
+normalize_orfs_image() {
+    local value="${1:-$ORFS_BASE_IMAGE}"
+    case "$value" in
+        */*)
+            printf '%s\n' "$value"
+            ;;
+        *)
+            printf 'openroad/orfs:%s\n' "$value"
+            ;;
+    esac
+}
+
+detect_docker_platform() {
+    local requested="${1:-auto}"
+    if [ "$requested" != "auto" ]; then
+        printf '%s\n' "$requested"
+        return
+    fi
+
+    local arch
+    arch="$(docker version --format '{{.Server.Arch}}' 2>/dev/null || uname -m)"
+    case "$arch" in
+        amd64|x86_64)
+            printf '%s\n' "linux/amd64"
+            ;;
+        arm64|aarch64)
+            printf '%s\n' "linux/arm64"
+            ;;
+        *)
+            echo "ERROR: cannot auto-detect Docker platform from architecture: $arch" >&2
+            echo "Set OPROAD_DOCKER_PLATFORM to linux/amd64 or linux/arm64." >&2
+            exit 1
+            ;;
+    esac
+}
+
+write_config() {
+    local base_image="$1"
+    local platform_setting="$2"
+    local resolved_platform="$3"
+    cat >"$CONFIG_FILE" <<EOF
+OPROAD_IMAGE="$IMAGE"
+OPROAD_ORFS_BASE_IMAGE="$base_image"
+OPROAD_DOCKER_PLATFORM="$platform_setting"
+OPROAD_RESOLVED_DOCKER_PLATFORM="$resolved_platform"
+EOF
+}
+
 docker_common_env=(
     -e "OPROAD_RUNNER=local"
     -e "OPROAD_DOCKER_TTY=0"
@@ -75,12 +168,13 @@ run_container() {
     tty="$(tty_args)"
 
     require_docker
-    docker run --rm $tty --platform "$PLATFORM" \
+    local resolved_platform
+    resolved_platform="$(detect_docker_platform "$PLATFORM_SETTING")"
+    docker run --rm $tty --platform "$resolved_platform" \
         "${docker_common_env[@]}" \
         -v "${mount_host}:${mount_container}" \
         "$IMAGE" "$@"
 }
-
 cmd="${1:-}"
 case "$cmd" in
     ""|-h|--help|help)
@@ -89,7 +183,120 @@ case "$cmd" in
         ;;
     build-image)
         require_docker
-        docker build --platform "$PLATFORM" -t "$IMAGE" "$REPO_ROOT"
+        ensure_docker_logged_in
+        user_image="$(normalize_orfs_image "${2:-$ORFS_BASE_IMAGE}")"
+        build_platform_setting="${3:-$PLATFORM_SETTING}"
+        build_platform="$(detect_docker_platform "$build_platform_setting")"
+
+        # ============================================================
+        # Auto-candidate list: try in priority order (image | build_platform | ORFS_BASE_PLATFORM)
+        # Each candidate: docker pull to verify reachability, then docker build
+        # ============================================================
+
+        # If user requests arm64, also offer amd64 as an alternate base platform
+        alt_platform="linux/amd64"
+        [ "$build_platform" = "linux/amd64" ] && alt_platform=""
+
+        # Candidate list: ["image|build_platform|ORFS_BASE_PLATFORM"]
+        candidates=()
+
+        # Candidate 1: user-specified image + user-specified build platform
+        candidates+=("$user_image|$build_platform|$build_platform")
+
+        # Candidate 2: user image + user build platform, but ORFS base = amd64 (if different)
+        if [ -n "$alt_platform" ]; then
+            candidates+=("$user_image|$build_platform|$alt_platform")
+        fi
+
+        # Candidates 3..N: known fallback tags + user build platform (same base)
+        # Also add amd64 base variant when applicable
+        known_fallbacks=(
+            "openroad/orfs:latest"
+            "openroad/orfs:v3.0-1305-g0aa3fe5d"
+        )
+        for fb in "${known_fallbacks[@]}"; do
+            [ "$fb" = "$user_image" ] && continue
+            candidates+=("$fb|$build_platform|$build_platform")
+            if [ -n "$alt_platform" ]; then
+                candidates+=("$fb|$build_platform|$alt_platform")
+            fi
+        done
+
+        echo ""
+        echo "=========================================="
+        echo "  oproad build-image"
+        echo "  Target platform : $build_platform"
+        echo "  Output image    : $IMAGE"
+        echo "  Preferred ORFS  : $user_image"
+        echo "=========================================="
+        echo ""
+
+        success=0
+        for candidate in "${candidates[@]}"; do
+            IFS='|' read -r try_image try_build_plat try_base_plat <<< "$candidate"
+
+            echo "------------------------------------------"
+            echo ">>> Candidate: $try_image"
+            echo "    Build platform : $try_build_plat"
+            echo "    ORFS base      : $try_base_plat"
+            echo ""
+
+            # Step A: docker pull to verify reachability
+            echo "    [1/2] docker pull --platform $try_base_plat $try_image ..."
+            if docker pull --platform "$try_base_plat" "$try_image"; then
+                echo "    [OK] Pull succeeded"
+            else
+                echo "    [SKIP] Pull failed, skipping this candidate"
+                echo ""
+                continue
+            fi
+
+            # Step B: docker build
+            echo "    [2/2] docker build ..."
+            if docker build --progress=plain --platform "$try_build_plat" \
+                --build-arg "ORFS_BASE_IMAGE=$try_image" \
+                --build-arg "ORFS_BASE_PLATFORM=$try_base_plat" \
+                -t "$IMAGE" "$REPO_ROOT"; then
+                # Determine ORFS version from the image tag
+                orfs_version="${try_image#openroad/orfs:}"
+                [ -z "$orfs_version" ] && orfs_version="$try_image"
+                image_arch="$(docker inspect "$IMAGE" --format '{{.Os}}/{{.Architecture}}' 2>/dev/null || echo "$try_build_plat")"
+                echo ""
+                echo "=========================================="
+                echo "  Build succeeded!"
+                echo "  ORFS image : $try_image"
+                echo "  ORFS version : $orfs_version"
+                echo "  CPU arch   : $image_arch"
+                echo "  Output tag : $IMAGE"
+                echo "=========================================="
+                build_base_image="$try_image"
+                success=1
+                break
+            else
+                echo "    [FAIL] Build failed, trying next candidate..."
+                echo ""
+            fi
+        done
+
+        if [ "$success" -eq 0 ]; then
+            echo ""
+            echo "=========================================="
+            echo "  x All candidates failed."
+            echo ""
+            echo "  Possible causes:"
+            echo "    - Docker Desktop is not running or not logged in"
+            echo "    - Cannot reach Docker Hub (auth.docker.io / registry-1.docker.io)"
+            echo "    - None of the known ORFS image tags are available"
+            echo ""
+            echo "  Suggestions:"
+            echo "    1. Start Docker Desktop and log in (docker login)"
+            echo "    2. Switch networks (e.g. mobile hotspot) and retry"
+            echo "    3. Specify an available image manually:"
+            echo "       ./oproad build-image <image> linux/amd64"
+            echo "=========================================="
+            exit 1
+        fi
+        write_config "$build_base_image" "$build_platform_setting" "$build_platform"
         exit $?
         ;;
     new)
@@ -97,7 +304,7 @@ case "$cmd" in
             usage
             exit 1
         fi
-        parent_dir="$(abs_dir "${5:-$(pwd)}")"
+        parent_dir="$(abs_dir "${5:-$REPO_ROOT/projects}")"
         run_container "$parent_dir" /workspace \
             oproad-runner new "$2" "$3" "$4" /workspace
         ;;
@@ -116,6 +323,9 @@ case "$cmd" in
     shell)
         work_dir="$(abs_dir "${2:-$(pwd)}")"
         run_container "$work_dir" /workspace bash
+        ;;
+    menu)
+        exec "$REPO_ROOT/oproad-menu" "${2:-}"
         ;;
     *)
         echo "ERROR: unknown command: $cmd" >&2

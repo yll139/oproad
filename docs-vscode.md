@@ -9,6 +9,11 @@ Open the repository folder in VS Code, then run:
 Terminal -> Run Task...
 ```
 
+VS Code does not show `.vscode/tasks.json` entries as buttons by default. This
+repository recommends the `Taskbar` extension. Install the recommended
+extensions when VS Code prompts, then open the Explorer sidebar and use the
+Taskbar view to run the `oproad:*` tasks from clickable entries.
+
 Available tasks:
 
 - `oproad: build Docker image`
@@ -24,6 +29,23 @@ Available tasks:
 The `new project` task asks for platform, design name, and target frequency.
 All other project tasks ask only for the project directory because the platform
 is stored in `.asic_project`.
+
+The `build Docker image` task asks for the ORFS Docker base version and Docker
+platform. The default platform is `auto`: Intel/AMD x86_64 hosts resolve to
+`linux/amd64`, and Apple Silicon/ARM64 hosts resolve to `linux/arm64`. Some ORFS
+base images may only publish one architecture; if Docker reports that the
+selected platform is unavailable, rebuild with an explicit supported platform.
+
+The default VS Code workspace directory is the cloned repository folder
+`oproad`. Inside that workspace, the default project parent path is `projects`
+and the default project/design name is `test`, so the default project root is:
+
+```text
+projects/test
+```
+
+Seen from the parent directory that contains the clone, this is
+`oproad/projects/test`.
 
 All VS Code tasks call the host-side `oproad` script. The script bind-mounts the
 local project directory into the Docker container, so edits made in VS Code and
