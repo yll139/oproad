@@ -2,7 +2,6 @@
 """
 Generate reports from current logs
 """
-
 import argparse
 import os
 import re
@@ -16,11 +15,10 @@ SINGLE_REPORT_FILENAME = f"{REPORTS_FOLDER}/report.log"
 SUMMARY_FILENAME = f"{REPORTS_FOLDER}/report-summary.log"
 DRC_FILENAME = "5_route_drc.rpt"
 LAST_EXPECTED_LOG = ["6_report.log", "generate_abstract.log"]
-METRICS_LOG_FMT = "metadata-generate.log"
-METRICS_CHECK_FMT = "{}/metadata-check.log"
+METRICS_LOG_FMT = "gen-metrics-{}-check.log"
+METRICS_CHECK_FMT = "{}/metadata-{}-check.log"
 REGEX_ERROR = re.compile(r"^\[error ?(\w+-\d+)?\]", re.IGNORECASE)
 REGEX_WARNING = re.compile(r"^\[warning ?(\w+-\d+)?\]", re.IGNORECASE)
-SKIPPED_FLOW_VARIANT_KEYWORDS = ["test", "tune"]
 STATUS_GREEN = "Passing"
 STATUS_RED = "Failing"
 
@@ -170,7 +168,7 @@ def gen_report(name, data):
             args.verbose - 2,
         )
 
-    if len(data["drcs"].keys()) > 0:
+    if len(d["drcs"].keys()) > 0:
         if data["status"] == STATUS_GREEN:
             output += "  Design has the violations under the allowed limit: "
         else:
@@ -248,11 +246,7 @@ design_list = dict()
 
 for log_dir, dirs, files in sorted(os.walk(LOGS_FOLDER, topdown=False)):
     dir_list = log_dir.split(os.sep)
-    # Handles autotuner folders, which do not have `report.log` natively.
-    # TODO: Can we log something for autotuner?
-    if len(dir_list) != 4 or any(
-        word in dir_list[-1] for word in SKIPPED_FLOW_VARIANT_KEYWORDS
-    ):
+    if len(dir_list) != 4:
         continue
     report_dir = log_dir.replace(LOGS_FOLDER, REPORTS_FOLDER)
 
@@ -264,7 +258,6 @@ for log_dir, dirs, files in sorted(os.walk(LOGS_FOLDER, topdown=False)):
     # check if design ran to completion without errors or warnings
     d["log_errors"] = list()
     d["log_warnings"] = list()
-    d["last_log"] = ""
     for name_ in sorted(files):
         temp_e, temp_w = parse_messages(os.path.join(log_dir, name_))
         d["log_errors"] += temp_e
@@ -275,13 +268,13 @@ for log_dir, dirs, files in sorted(os.walk(LOGS_FOLDER, topdown=False)):
 
     # check if metrics generation had issues
     d["metrics_logs_errors"], d["metrics_logs_warnings"] = parse_messages(
-        os.path.join(report_dir, METRICS_LOG_FMT),
+        os.path.join(report_dir, METRICS_LOG_FMT.format(variant)),
         print_missing=d["finished"],
     )
 
     # check if metrics passed
     d["metrics_errors"], d["metrics_warnings"] = parse_messages(
-        METRICS_CHECK_FMT.format(report_dir), print_missing=d["finished"]
+        METRICS_CHECK_FMT.format(report_dir, variant), print_missing=d["finished"]
     )
 
     # check if calibre was run and if drc check passed
@@ -296,7 +289,7 @@ for log_dir, dirs, files in sorted(os.walk(LOGS_FOLDER, topdown=False)):
         with open(drc_report_file, "r") as file_:
             for line_ in file_.readlines():
                 if "violation type:" in line_:
-                    type_ = line_.split("violation type:", 1)[1].strip()
+                    type_ = line_.strip("violation type:").strip()
                     if type_ in d["drcs"].keys():
                         d["drcs"][type_] += 1
                     else:

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import os
 import re
 import sys
 import argparse  # argument parsing
@@ -15,12 +14,9 @@ parser.add_argument("--outputLef", "-o", required=True, help="Output Lef")
 args = parser.parse_args()
 
 
-if not os.path.isfile(args.inputLef):
-    print(f"Error: Input LEF not found: {args.inputLef}", file=sys.stderr)
-    sys.exit(1)
-
-with open(args.inputLef) as f:
-    content = f.read()
+f = open(args.inputLef)
+content = f.read()
+f.close()
 
 # refMacro = "BUFH_X1M_A12TR"
 
@@ -30,8 +26,9 @@ replace = r"MACRO \1\2END \3\nMACRO DUMMY\2END DUMMY"
 result, count = re.subn(pattern, replace, content, 1, re.S)
 
 if count > 0:
-    with open(args.outputLef, "w") as f:
-        f.write(result)
+    f = open(args.outputLef, "w")
+    f.write(result)
+    f.close()
 else:
-    print("Error: Pattern not found", file=sys.stderr)
+    print("ERROR: Pattern not found")
     sys.exit(1)

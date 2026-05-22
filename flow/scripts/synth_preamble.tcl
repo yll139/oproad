@@ -1,143 +1,67 @@
 yosys -import
 
 source $::env(SCRIPTS_DIR)/util.tcl
-erase_non_stage_variables synth
 
-# If using a cached, gate level netlist, then copy over to the results dir with
-# preserve timestamps flag set. If you don't, subsequent runs will cause the
-# floorplan step to be re-executed.
-if { [env_var_exists_and_non_empty SYNTH_NETLIST_FILES] } {
-  if { [llength $::env(SYNTH_NETLIST_FILES)] == 1 } {
-    log_cmd exec cp -p $::env(SYNTH_NETLIST_FILES) $::env(RESULTS_DIR)/1_2_yosys.v
-  } else {
-    # The date should be the most recent date of the files, but to
-    # keep things simple we just use the creation date
-    log_cmd exec cat {*}$::env(SYNTH_NETLIST_FILES) > $::env(RESULTS_DIR)/1_2_yosys.v
-  }
-  log_cmd exec cp -p $::env(SDC_FILE) $::env(RESULTS_DIR)/1_synth.sdc
-  if { [env_var_exists_and_non_empty CACHED_REPORTS] } {
-    log_cmd exec cp -p {*}$::env(CACHED_REPORTS) $::env(REPORTS_DIR)/.
+if {[info exist ::env(CACHED_NETLIST)]} {
+  exec cp $::env(CACHED_NETLIST) $::env(RESULTS_DIR)/1_1_yosys.v
+  if {[info exist ::env(CACHED_REPORTS)]} {
+    exec cp {*}$::env(CACHED_REPORTS) $::env(REPORTS_DIR)/.
   }
   exit
 }
 
-proc read_checkpoint { file } {
-  # We are reading a Yosys checkpoint
-  if { [file extension $file] == ".json" } {
+# Setup verilog include directories
+set vIdirsArgs ""
+if {[info exist ::env(VERILOG_INCLUDE_DIRS)]} {
+  foreach dir $::env(VERILOG_INCLUDE_DIRS) {
+    lappend vIdirsArgs "-I$dir"
+  }
+  set vIdirsArgs [join $vIdirsArgs]
+}
+
+
+# Read verilog files
+foreach file $::env(VERILOG_FILES) {
+  if {[file extension $file] == ".rtlil"} {
+    read_rtlil $file
+  } elseif {[file extension $file] == ".json"} {
     read_json $file
   } else {
-    read_rtlil $file
+    read_verilog -defer -sv {*}$vIdirsArgs $file
   }
 }
 
-proc read_design_sources { } {
-  # We are reading Verilog sources
-  source $::env(SCRIPTS_DIR)/synth_stdcells.tcl
 
-  # Setup verilog include directories
-  set vIdirsArgs ""
-  if { [env_var_exists_and_non_empty VERILOG_INCLUDE_DIRS] } {
-    foreach dir $::env(VERILOG_INCLUDE_DIRS) {
-      lappend vIdirsArgs "-I$dir"
-    }
-    set vIdirsArgs [join $vIdirsArgs]
-  }
 
-  if { [env_var_equals SYNTH_HDL_FRONTEND slang] } {
-    plugin -i $::env(SLANG_PLUGIN_PATH)
 
-    set slang_args [list \
-      -D SYNTHESIS --keep-hierarchy --compat=vcs --ignore-assertions --top $::env(DESIGN_NAME) \
-      {*}$vIdirsArgs {*}[env_var_or_empty VERILOG_DEFINES]]
+# Read standard cells and macros as blackbox inputs
+# These libs have their dont_use properties set accordingly
+read_liberty -lib {*}$::env(DONT_USE_LIBS)
 
-    # slang requires all files at once
-    lappend slang_args {*}$::env(VERILOG_FILES)
-
-    # Add clock gate cell definition, if available
-    if { [env_var_exists_and_non_empty CLKGATE_MAP_FILE] } {
-      lappend slang_args $::env(CLKGATE_MAP_FILE)
-    }
-
-    # Apply top-level parameters
-    dict for {key value} [env_var_or_empty VERILOG_TOP_PARAMS] {
-      lappend slang_args -G "$key=$value"
-    }
-
-    # Automatically blackbox macros from ADDITIONAL_LIBS so that
-    # any competing Verilog definitions in the source files are
-    # ignored in favor of the liberty view, consistent with the
-    # behavior of the builtin Verilog frontend.
-    if { [env_var_exists_and_non_empty ADDITIONAL_LIBS] } {
-      foreach m [get_liberty_cell_names] {
-        lappend slang_args --blackboxed-module "$m"
-      }
-    }
-
-    # Apply module blackboxing based on module names as they appear
-    # in the input, that is before any module name mangling done
-    # by elaboration and synthesis
-    if { [env_var_exists_and_non_empty SYNTH_BLACKBOXES] } {
-      foreach m $::env(SYNTH_BLACKBOXES) {
-        lappend slang_args --blackboxed-module "$m"
-      }
-    }
-
-    # Add user arguments
-    lappend slang_args {*}$::env(SYNTH_SLANG_ARGS)
-
-    yosys read_slang {*}$slang_args
-
-    # Workaround for yosys-slang#119
-    setattr -unset init
-  } elseif { [env_var_equals SYNTH_HDL_FRONTEND verific] } {
-    if { [env_var_exists_and_non_empty VERILOG_INCLUDE_DIRS] } {
-      verific -vlog-incdir {*}$::env(VERILOG_INCLUDE_DIRS)
-    }
-    if { [env_var_exists_and_non_empty VERILOG_DEFINES] } {
-      verific -vlog-define {*}$::env(VERILOG_DEFINES)
-    }
-    verific -sv2012 {*}$::env(VERILOG_FILES)
-    verific -import -no-split-complex-ports $::env(DESIGN_NAME)
-
-    dict for {key value} [env_var_or_empty VERILOG_TOP_PARAMS] {
-      # Apply top-level parameters
-      chparam -set $key $value $::env(DESIGN_NAME)
-    }
-
-    if { [env_var_exists_and_non_empty SYNTH_BLACKBOXES] } {
-      error "Non-empty SYNTH_BLACKBOXES unsupported with HDL frontend \"verific\""
-    }
-  } elseif { ![env_var_exists_and_non_empty SYNTH_HDL_FRONTEND] } {
-    verilog_defaults -push
-    if { [env_var_exists_and_non_empty VERILOG_DEFINES] } {
-      verilog_defaults -add {*}$::env(VERILOG_DEFINES)
-    }
-    foreach file $::env(VERILOG_FILES) {
-      read_verilog -defer -sv {*}$vIdirsArgs $file
-    }
-    # Read platform specific mapfile for OPENROAD_CLKGATE cells
-    if { [env_var_exists_and_non_empty CLKGATE_MAP_FILE] } {
-      read_verilog -defer $::env(CLKGATE_MAP_FILE)
-    }
-    verilog_defaults -pop
-
-    dict for {key value} [env_var_or_empty VERILOG_TOP_PARAMS] {
-      # Apply top-level parameters
-      chparam -set $key $value $::env(DESIGN_NAME)
-    }
-
-    if { [env_var_exists_and_non_empty SYNTH_BLACKBOXES] } {
-      hierarchy -check -top $::env(DESIGN_NAME)
-      foreach m $::env(SYNTH_BLACKBOXES) {
-        blackbox $m
-      }
-    }
-  } else {
-    error "Unrecognized HDL frontend: $::env(SYNTH_HDL_FRONTEND)"
+# Apply toplevel parameters (if exist)
+if {[info exist ::env(VERILOG_TOP_PARAMS)]} {
+  dict for {key value} $::env(VERILOG_TOP_PARAMS) {
+    chparam -set $key $value $::env(DESIGN_NAME)
   }
 }
 
-if { $::env(ABC_AREA) } {
+# Read platform specific mapfile for OPENROAD_CLKGATE cells
+if {[info exist ::env(CLKGATE_MAP_FILE)]} {
+  read_verilog -defer $::env(CLKGATE_MAP_FILE)
+}
+
+# Mark modules to keep from getting removed in flattening
+if {[info exist ::env(PRESERVE_CELLS)]} {
+  # Expand hierarchy since verilog was read in with -defer
+  hierarchy -check -top $::env(DESIGN_NAME)
+  foreach cell $::env(PRESERVE_CELLS) {
+    select -module $cell
+    setattr -mod -set keep_hierarchy 1
+    select -clear
+  }
+}
+
+if {$::env(ABC_AREA)} {
   puts "Using ABC area script."
   set abc_script $::env(SCRIPTS_DIR)/abc_area.script
 } else {
@@ -145,34 +69,35 @@ if { $::env(ABC_AREA) } {
   set abc_script $::env(SCRIPTS_DIR)/abc_speed.script
 }
 
-# Create argument list for stat
-set lib_args ""
-foreach lib $::env(LIB_FILES) {
-  append lib_args "-liberty $lib "
-}
+# Technology mapping for cells
+# ABC supports multiple liberty files, but the hook from Yosys to ABC doesn't
+set abc_args [list -script $abc_script \
+      -liberty $::env(DONT_USE_SC_LIB) \
+      -constr $::env(OBJECTS_DIR)/abc.constr]
 
 # Exclude dont_use cells. This includes macros that are specified via
 # LIB_FILES and ADDITIONAL_LIBS that are included in LIB_FILES.
-set lib_dont_use_args ""
-if { [env_var_exists_and_non_empty DONT_USE_CELLS] } {
+if {[info exist ::env(DONT_USE_CELLS)] && $::env(DONT_USE_CELLS) != ""} {
   foreach cell $::env(DONT_USE_CELLS) {
-    lappend lib_dont_use_args -dont_use $cell
+    lappend abc_args -dont_use $cell
   }
 }
 
-# Technology mapping for cells
-set abc_args [list -script $abc_script \
-  {*}$lib_args {*}$lib_dont_use_args -constr $::env(OBJECTS_DIR)/abc.constr]
-
-if { [env_var_exists_and_non_empty SDC_FILE_CLOCK_PERIOD] } {
+if {[info exist ::env(SDC_FILE_CLOCK_PERIOD)] && [file isfile $::env(SDC_FILE_CLOCK_PERIOD)]} {
   puts "Extracting clock period from SDC file: $::env(SDC_FILE_CLOCK_PERIOD)"
   set fp [open $::env(SDC_FILE_CLOCK_PERIOD) r]
   set clock_period [string trim [read $fp]]
-  if { $clock_period != "" } {
+  if {$clock_period != ""} {
     puts "Setting clock period to $clock_period"
     lappend abc_args -D $clock_period
   }
   close $fp
+}
+
+# Create argument list for stat
+set stat_libs ""
+foreach lib $::env(DONT_USE_LIBS) {
+  append stat_libs "-liberty $lib "
 }
 
 set constr [open $::env(OBJECTS_DIR)/abc.constr w]
@@ -180,31 +105,13 @@ puts $constr "set_driving_cell $::env(ABC_DRIVER_CELL)"
 puts $constr "set_load $::env(ABC_LOAD_IN_FF)"
 close $constr
 
-proc convert_liberty_areas { } {
-  cellmatch -derive_luts =A:liberty_cell
-  # find a reference nand2 gate
-  set found_cell ""
-  set found_cell_area ""
-  # iterate over all cells with a nand2 signature
-  foreach cell [tee -q -s result.string select -list-mod =*/a:lut=4'b0111 %m] {
-    if { ![rtlil::has_attr -mod $cell area] } {
-      puts "Cell $cell missing area information"
-      continue
-    }
-    set area [rtlil::get_attr -string -mod $cell area]
-    if { $found_cell == "" || $area < $found_cell_area } {
-      set found_cell $cell
-      set found_cell_area $area
-    }
-  }
-  if { $found_cell == "" } {
-    error "reference nand2 cell not found"
-  }
-
-  # convert the area on all Liberty cells to a gate number equivalent
-  foreach box [tee -q -s result.string select -list-mod =A:area =A:liberty_cell %i] {
-    set area [rtlil::get_attr -mod -string $box area]
-    set gate_eq [expr int($area / $found_cell_area)]
-    rtlil::set_attr -mod -uint $box gate_cost_equivalent $gate_eq
-  }
+proc synthesize_check {synth_args} {
+  # Generic synthesis
+  log_cmd synth -top $::env(DESIGN_NAME) -run :fine {*}$synth_args
+  json -o $::env(RESULTS_DIR)/mem.json
+  # Run report and check here so as to fail early if this synthesis run is doomed
+  exec -- python3 $::env(SCRIPTS_DIR)/mem_dump.py --max-bits $::env(SYNTH_MEMORY_MAX_BITS) $::env(RESULTS_DIR)/mem.json
+  synth -top $::env(DESIGN_NAME) -run fine: {*}$synth_args
+  # Get rid of indigestibles
+  chformal -remove
 }

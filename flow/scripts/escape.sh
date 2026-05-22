@@ -1,2 +1,2 @@
-#!/usr/bin/env bash
+#!/bin/bash
 sed -e 's/ /\\ /g' -e 's/(/\\(/g' -e 's/|/\\|/g' -e 's/)/\\)/g'

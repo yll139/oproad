@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+REPO_ROOT="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+
+IMAGE="${OPROAD_IMAGE:-oproad:latest}"
+PLATFORM="${OPROAD_DOCKER_PLATFORM:-linux/amd64}"
+
+usage() {
+    cat <<'EOF'
+Usage:
+  oproad build-image
+  oproad new       <platform> <design> <freq_GHz> [parent_dir]
+  oproad sim       [project_dir]
+  oproad synth     [project_dir]
+  oproad implement [project_dir]
+  oproad report    [project_dir]
+  oproad clean     [project_dir]
+  oproad delete    [project_dir]
+  oproad shell     [work_dir]
+
+Only 'oproad new' takes a platform/process argument. Other commands read the
+project's .asic_project file.
+
+Environment:
+  OPROAD_IMAGE            Docker image tag, default: oproad:latest
+  OPROAD_DOCKER_PLATFORM  Docker platform, default: linux/amd64
+  OPROAD_FINISH_MODE      auto, light, full, or skip
+EOF
+}
+
+require_docker() {
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "ERROR: Docker is required but was not found on PATH." >&2
+        exit 127
+    fi
+}
+
+abs_dir() {
+    local path="${1:-.}"
+    mkdir -p "$path"
+    cd "$path" >/dev/null 2>&1 && pwd
+}
+
+existing_abs_dir() {
+    local path="${1:-.}"
+    cd "$path" >/dev/null 2>&1 && pwd
+}
+
+tty_args() {
+    if [ -t 0 ] && [ -t 1 ]; then
+        printf '%s\n' "-it"
+    else
+        printf '%s\n' "-i"
+    fi
+}
+
+docker_common_env=(
+    -e "OPROAD_RUNNER=local"
+    -e "OPROAD_DOCKER_TTY=0"
+    -e "OPROAD_FINISH_MODE=${OPROAD_FINISH_MODE:-auto}"
+)
+
+run_container() {
+    local mount_host="$1"
+    local mount_container="$2"
+    shift 2
+    local tty
+    tty="$(tty_args)"
+
+    require_docker
+    docker run --rm $tty --platform "$PLATFORM" \
+        "${docker_common_env[@]}" \
+        -v "${mount_host}:${mount_container}" \
+        "$IMAGE" "$@"
+}
+
+cmd="${1:-}"
+case "$cmd" in
+    ""|-h|--help|help)
+        usage
+        exit 0
+        ;;
+    build-image)
+        require_docker
+        docker build --platform "$PLATFORM" -t "$IMAGE" "$REPO_ROOT"
+        exit $?
+        ;;
+    new)
+        if [ "$#" -lt 4 ]; then
+            usage
+            exit 1
+        fi
+        parent_dir="$(abs_dir "${5:-$(pwd)}")"
+        run_container "$parent_dir" /workspace \
+            oproad-runner new "$2" "$3" "$4" /workspace
+        ;;
+    sim|synth|implement|run|report|clean)
+        project_dir="$(existing_abs_dir "${2:-$(pwd)}")"
+        run_container "$project_dir" /project \
+            oproad-runner "$cmd" /project
+        ;;
+    delete)
+        project_dir="$(existing_abs_dir "${2:-$(pwd)}")"
+        project_parent="$(dirname "$project_dir")"
+        project_name="$(basename "$project_dir")"
+        run_container "$project_parent" /workspace \
+            oproad-runner delete "/workspace/${project_name}"
+        ;;
+    shell)
+        work_dir="$(abs_dir "${2:-$(pwd)}")"
+        run_container "$work_dir" /workspace bash
+        ;;
+    *)
+        echo "ERROR: unknown command: $cmd" >&2
+        echo "" >&2
+        usage
+        exit 1
+        ;;
+esac

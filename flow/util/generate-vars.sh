@@ -22,7 +22,7 @@ while read -r VAR; do
         # they are invalid in shell
         continue
     fi
-    name="${VAR%%=*}"
+    name="${VAR%=*}"
     value="${VAR#*=}"
     if [[ "${name}" =~ ^[[:digit:]] ]] ; then
         # skip if the name starts with a number
@@ -46,25 +46,25 @@ while read -r VAR; do
         # skip variables that match the exclude patterns
         continue
     fi
+    # handle special case where the variable needs to be splitted in Tcl code
+    if [[ "${name}" == "GND_NETS_VOLTAGES" || "${name}" == "PWR_NETS_VOLTAGES" ]]; then
+        echo "export ${name}='${value}'" >> $1.sh
+        echo "set env(${name}) ${value}" >> $1.tcl
+        echo "set env ${name} ${value}" >> $1.gdb
+        continue
+    fi
 
     # convert absolute paths if possible to use FLOW_HOME variable
     if [[ "${name}" == *"SCRIPTS_DIR"* ]]; then
         value=$(sed -e "s,${FLOW_ROOT},.,g" <<< "${value}")
-    fi
-
-    # PII members use PRESERVE_PATHS=1 make issue ...
-    if [[ ! -v PRESERVE_PATHS ]]; then
-        for path in workspace platforms; do
-            value=$(sed -e "s,\(^\|[: \"']\)/${path},\1./${path},g" <<< "${value}")
-        done
     fi
     value=$(sed -e "s,${FLOW_ROOT},\${FLOW_HOME},g" <<< "${value}")
     value=$(sed -e "s,${ORFS_ROOT},\${FLOW_HOME}/\.\.,g" <<< "${value}")
 
     echo "export ${name}=\"${value}\"" >> $1.sh
     if [[ "${value}" == *'$'* ]]; then
-        echo "set env ${name} $(sed -e 's,${FLOW_HOME},getenv("FLOW_HOME"),g' <<< ${value})" >> $1.gdb
-        echo "set env(${name}) \"$(sed -e 's,${FLOW_HOME},$::env(FLOW_HOME),g' <<< ${value})\"" >> $1.tcl
+        echo "set env ${name} $(sed -e 's,${FLOW_HOME},getenv("FLOW_HOME"),' <<< ${value})" >> $1.gdb
+        echo "set env(${name}) \"$(sed -e 's,${FLOW_HOME},$::env(FLOW_HOME),' <<< ${value})\"" >> $1.tcl
     else
         echo "set env(${name}) \"${value}\"" >> $1.tcl
         echo "set env ${name} ${value}" >> $1.gdb

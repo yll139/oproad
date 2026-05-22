@@ -5,9 +5,8 @@
 # information in specific files using regular expressions
 # -----------------------------------------------------------------------------
 
-import hashlib
 import os
-import shutil
+from sys import exit
 from datetime import datetime, timedelta
 from collections import defaultdict
 from uuid import uuid4 as uuid
@@ -15,8 +14,15 @@ from subprocess import check_output, call, STDOUT
 
 import argparse
 import json
+import pandas as pd
 import re
 from glob import glob
+
+# make sure the working dir is flow/
+os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+# Parse and validate arguments
+# =============================================================================
 
 
 def parse_args():
@@ -24,9 +30,17 @@ def parse_args():
         description="Generates metadata from OpenROAD flow"
     )
     parser.add_argument(
+        "--flowPath",
+        "-f",
+        required=False,
+        default="./",
+        help="Path to the flow directory",
+    )
+    parser.add_argument(
         "--design",
         "-d",
-        required=True,
+        required=False,
+        default="all_designs",
         help="Design Name for metrics",
     )
     parser.add_argument(
@@ -50,10 +64,12 @@ def parse_args():
         "--output", "-o", required=False, default="metadata.json", help="Output file"
     )
     parser.add_argument("--hier", "-x", action="store_true", help="Hierarchical JSON")
-    parser.add_argument("--logs", required=True, help="Path to logs")
-    parser.add_argument("--reports", required=True, help="Path to reports")
-    parser.add_argument("--results", required=True, help="Path to results")
     args = parser.parse_args()
+
+    if not os.path.isdir(args.flowPath):
+        print("[ERROR] flowPath does not exist")
+        print("Path: " + args.flowPath)
+        exit(1)
 
     return args
 
@@ -78,14 +94,16 @@ def extractTagFromFile(
     count=False,
     occurrence=-1,
     defaultNotFound="N/A",
-    t=float,
+    t=str,
     required=True,
 ):
     if jsonTag in jsonFile:
         print("[WARN] Overwriting Tag", jsonTag)
 
+    # Open file
     try:
-        with open(file) as f:
+        searchFilePath = os.path.join(args.flowPath, file)
+        with open(searchFilePath) as f:
             content = f.read()
 
         parsedMetrics = re.findall(pattern, content, re.M)
@@ -104,18 +122,18 @@ def extractTagFromFile(
                 value = parsedMetrics[occurrence]
                 value = value.strip()
                 try:
-                    jsonFile[jsonTag] = t(value)
+                    jsonFile[jsonTag] = float(value)
                 except BaseException:
                     jsonFile[jsonTag] = str(value)
         else:
             # Only print a warning if the defaultNotFound is not set
             print(
-                "[WARN] Tag {} not found in {}.".format(jsonTag, file),
+                "[WARN] Tag {} not found in {}.".format(jsonTag, searchFilePath),
                 "Will use {}.".format(defaultNotFound),
             )
             jsonFile[jsonTag] = defaultNotFound
     except IOError:
-        print("[ERROR] Failed to open file:", file)
+        print("[ERROR] Failed to open file:", searchFilePath)
         jsonFile[jsonTag] = "ERR"
 
 
@@ -144,13 +162,16 @@ def extractGnuTime(prefix, jsonFile, file):
 #
 def read_sdc(file_name):
     clkList = []
+    sdcFile = None
 
     try:
-        with open(file_name, "r") as sdcFile:
-            lines = sdcFile.readlines()
-    except OSError as e:
-        print(f"[WARN] Failed to open file: {file_name} ({e})")
+        sdcFile = open(file_name, "r")
+    except IOError:
+        print("[WARN] Failed to open file:", file_name)
         return clkList
+
+    lines = sdcFile.readlines()
+    sdcFile.close()
 
     for line in lines:
         if len(line.split()) < 2:
@@ -172,52 +193,32 @@ def read_sdc(file_name):
 # =============================================================================
 
 
-def git_head_commit(git_exe, folder):
-    """Resolve the HEAD commit SHA of `folder`'s git working tree, or
-    return a descriptive fallback string. Accepts a pre-resolved
-    `git_exe` path so callers don't pay a `shutil.which` lookup per
-    invocation. Prints a [WARN] for the not-a-git-repo case (the
-    git-missing case is expected to be warned about by the caller)."""
-    if git_exe is None:
-        return "git not on PATH"
-    if not os.path.isdir(folder):
-        return "N/A"
-    with open(os.devnull, "w") as devnull:
-        if call([git_exe, "branch"], stderr=STDOUT, stdout=devnull, cwd=folder) != 0:
-            print("[WARN] not a git repo:", folder)
-            return "not a git repo"
-    return (
-        check_output([git_exe, "rev-parse", "HEAD"], cwd=folder).decode("utf-8").strip()
-    )
-
-
-def file_sha1(path):
-    """SHA-1 of `path`, or "N/A" if absent. Read in chunks so large
-    netlists don't blow the heap."""
-    if not os.path.isfile(path):
-        return "N/A"
-    hasher = hashlib.sha1()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(16 * 1024 * 1024), b""):
-            hasher.update(chunk)
-    return hasher.hexdigest()
+def is_git_repo(folder=None):
+    cmd = ["git", "branch"]
+    if folder is not None:
+        return call(cmd, stderr=STDOUT, stdout=open(os.devnull, "w"), cwd=folder) == 0
+    else:
+        return call(cmd, stderr=STDOUT, stdout=open(os.devnull, "w")) == 0
 
 
 def merge_jsons(root_path, output, files):
     paths = sorted(glob(os.path.join(root_path, files)))
     for path in paths:
-        with open(path, "r") as file:
-            data = json.load(file)
+        file = open(path, "r")
+        data = json.load(file)
         output.update(data)
+        file.close()
 
 
-def extract_metrics(
-    cwd, platform, design, flow_variant, output, hier_json, logPath, rptPath, resultPath
-):
+def extract_metrics(cwd, platform, design, flow_variant, output, hier_json):
     baseRegEx = "^{}\n^-*\n^{}"
 
+    logPath = os.path.join(cwd, "logs", platform, design, flow_variant)
+    rptPath = os.path.join(cwd, "reports", platform, design, flow_variant)
+    resultPath = os.path.join(cwd, "results", platform, design, flow_variant)
+
     metrics_dict = defaultdict(dict)
-    metrics_dict["run__flow__generate_date"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    metrics_dict["run__flow__generate_date"] = now.strftime("%Y-%m-%d %H:%M")
     metrics_dict["run__flow__metrics_version"] = "Metrics_2.1.2"
     cmdOutput = check_output([os.environ.get("OPENROAD_EXE", "openroad"), "-version"])
     cmdFields = [x.decode("utf-8") for x in cmdOutput.split()]
@@ -226,32 +227,36 @@ def extract_metrics(
         metrics_dict["run__flow__openroad_commit"] = str(cmdFields[1])
     else:
         metrics_dict["run__flow__openroad_commit"] = "N/A"
-    git_exe = shutil.which("git")
-    if git_exe is None:
-        print("[WARN] git not on PATH; commit metadata will be N/A")
-    metrics_dict["run__flow__scripts_commit"] = git_head_commit(git_exe, cwd)
+    if is_git_repo():
+        cmdOutput = check_output(["git", "rev-parse", "HEAD"])
+        cmdOutput = cmdOutput.decode("utf-8").strip()
+    else:
+        cmdOutput = "not a git repo"
+        print("[WARN]", cmdOutput)
+    metrics_dict["run__flow__scripts_commit"] = cmdOutput
     metrics_dict["run__flow__uuid"] = str(uuid())
     metrics_dict["run__flow__design"] = design
     metrics_dict["run__flow__platform"] = platform
     platformDir = os.environ.get("PLATFORM_DIR")
     if platformDir is None:
         print("[INFO]", "PLATFORM_DIR env variable not set")
-        metrics_dict["run__flow__platform_commit"] = "N/A"
+        cmdOutput = "N/A"
+    elif is_git_repo(folder=platformDir):
+        cmdOutput = check_output(["git", "rev-parse", "HEAD"], cwd=platformDir)
+        cmdOutput = cmdOutput.decode("utf-8").strip()
     else:
-        metrics_dict["run__flow__platform_commit"] = git_head_commit(
-            git_exe, platformDir
-        )
+        print("[WARN]", "not a git repo")
+        cmdOutput = "N/A"
+    metrics_dict["run__flow__platform_commit"] = cmdOutput
     metrics_dict["run__flow__variant"] = flow_variant
 
     # Synthesis
     # =========================================================================
 
-    # The new format (>= 0.57) with -hierarchy is:
-    #    <count> <area> <local_count> <local_area> cells
     extractTagFromFile(
         "synth__design__instance__count__stdcell",
         metrics_dict,
-        "^\\s+(\\d+)\\s+[-0-9.]+\\s+\\S+\\s+\\S+\\s+cells$",
+        "Number of cells: +(\\S+)",
         rptPath + "/synth_stat.txt",
     )
 
@@ -261,15 +266,6 @@ def extract_metrics(
         "Chip area for (?:top )?module.*: +(\\S+)",
         rptPath + "/synth_stat.txt",
     )
-
-    # Netlist hashes: fingerprints of the canonical RTLIL (pre-ABC) and
-    # the final post-synthesis Verilog so the rules-base.json check
-    # (level=warning) flags when bazel-built vs make-built yosys
-    # disagree for the same RTL.
-    metrics_dict["synth__canonical_netlist__hash"] = file_sha1(
-        resultPath + "/1_1_yosys_canonicalize.rtlil"
-    )
-    metrics_dict["synth__netlist__hash"] = file_sha1(resultPath + "/1_2_yosys.v")
 
     # Clocks
     # =========================================================================
@@ -314,16 +310,17 @@ def extract_metrics(
     # Accumulate time
     # =========================================================================
 
-    extractGnuTime("synth", metrics_dict, logPath + "/1_2_yosys.log")
+    extractGnuTime("synth", metrics_dict, logPath + "/1_1_yosys.log")
     extractGnuTime("floorplan", metrics_dict, logPath + "/2_1_floorplan.log")
     extractGnuTime("floorplan_io", metrics_dict, logPath + "/2_2_floorplan_io.log")
+    extractGnuTime("floorplan_tdms", metrics_dict, logPath + "/2_3_floorplan_tdms.log")
     extractGnuTime(
-        "floorplan_macro", metrics_dict, logPath + "/2_3_floorplan_macro.log"
+        "floorplan_macro", metrics_dict, logPath + "/2_4_floorplan_macro.log"
     )
     extractGnuTime(
-        "floorplan_tap", metrics_dict, logPath + "/2_4_floorplan_tapcell.log"
+        "floorplan_tap", metrics_dict, logPath + "/2_5_floorplan_tapcell.log"
     )
-    extractGnuTime("floorplan_pdn", metrics_dict, logPath + "/2_5_floorplan_pdn.log")
+    extractGnuTime("floorplan_pdn", metrics_dict, logPath + "/2_6_floorplan_pdn.log")
     extractGnuTime(
         "globalplace_skip_io", metrics_dict, logPath + "/3_1_place_gp_skip_io.log"
     )
@@ -340,7 +337,6 @@ def extract_metrics(
 
     failed = False
     total = timedelta()
-    elapsed_seconds = {}
     for key in metrics_dict:
         if key.endswith("__runtime__total"):
             # Big try block because Hour and microsecond is optional
@@ -367,21 +363,14 @@ def extract_metrics(
             )
             total += delta
 
-            stage = key[: -len("__runtime__total")]
-            elapsed_seconds[stage + "__elapsed_seconds"] = delta.total_seconds()
-
     if failed:
         metrics_dict["total_time"] = "ERR"
-        metrics_dict["total_elapsed_seconds"] = "ERR"
     else:
         metrics_dict["total_time"] = str(total)
-        metrics_dict["total_elapsed_seconds"] = total.total_seconds()
 
-    metrics_dict.update(elapsed_seconds)
-
-    metrics_dict = {
-        key.replace(":", "__"): value for key, value in metrics_dict.items()
-    }
+    metrics_df = pd.DataFrame(list(metrics_dict.items()))
+    col_index = metrics_df.iloc[0][1] + "__" + metrics_df.iloc[1][1]
+    metrics_df.columns = ["Metrics", col_index]
 
     if hier_json:
         # Convert the Metrics dictionary to hierarchical format by stripping
@@ -396,18 +385,64 @@ def extract_metrics(
     with open(output, "w") as resultSpecfile:
         json.dump(metrics_dict, resultSpecfile, indent=2, sort_keys=True)
 
+    return metrics_dict, metrics_df
 
-if __name__ == "__main__":
-    args = parse_args()
 
-    extract_metrics(
-        os.path.join(os.path.dirname(os.path.realpath(__file__)), "../"),
+args = parse_args()
+now = datetime.now()
+flow_variants = args.flowVariant.split()
+all_designs = True if args.design == "all_designs" else False
+designs = args.design.split()
+platforms = args.platform.split()
+
+if all_designs or len(designs) > 1 or len(flow_variants) > 1:
+    rootdir = "./logs"
+
+    all_df = pd.DataFrame()
+    all_d = []
+
+    cwd = os.getcwd()
+    for platform_it in os.scandir(rootdir):
+        if not platform_it.is_dir():
+            continue
+        plt = platform_it.name
+        if not plt in platforms:
+            continue
+        for design_it in os.scandir(platform_it.path):
+            if not design_it.is_dir():
+                continue
+            des = design_it.name
+            if not (all_designs or des in designs):
+                continue
+            for variant in flow_variants:
+                log_dir = os.path.join(cwd, "logs", plt, des, variant)
+                if not os.path.isdir(log_dir):
+                    continue
+                if not os.path.isfile(os.path.join(log_dir, "6_report.json")):
+                    print(
+                        f"Skip extracting metrics for {plt}, {des}, {variant} as run did not complete"
+                    )
+                    continue
+                print(f"Extract Metrics for {plt}, {des}, {variant}")
+                file = "/".join(["reports", plt, des, variant, "metrics.json"])
+                metrics, df = extract_metrics(cwd, plt, des, variant, file, args.hier)
+                all_d.append(metrics)
+                if all_df.shape[0] == 0:
+                    all_df = df
+                else:
+                    all_df = all_df.merge(df, on="Metrics", how="inner")
+
+    with open("metrics.json", "w") as outFile:
+        json.dump(all_d, outFile, indent=2)
+
+    with open("metrics.html", "w") as f:
+        f.write(all_df.to_html())
+else:
+    metrics_dict, metrics_df = extract_metrics(
+        args.flowPath,
         args.platform,
         args.design,
         args.flowVariant,
         args.output,
         args.hier,
-        args.logs,
-        args.reports,
-        args.results,
     )

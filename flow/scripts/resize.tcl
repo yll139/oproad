@@ -1,28 +1,57 @@
 utl::set_metrics_stage "placeopt__{}"
 source $::env(SCRIPTS_DIR)/load.tcl
-erase_non_stage_variables place
 load_design 3_3_place_gp.odb 2_floorplan.sdc
-source_step_tcl PRE RESIZE
 
-log_cmd estimate_parasitics -placement
+estimate_parasitics -placement
 
 set instance_count_before [sta::network_leaf_instance_count]
 set pin_count_before [sta::network_leaf_pin_count]
 
 set_dont_use $::env(DONT_USE_CELLS)
 
-if { [env_var_exists_and_non_empty EARLY_SIZING_CAP_RATIO] } {
-  log_cmd set_opt_config -set_early_sizing_cap_ratio $env(EARLY_SIZING_CAP_RATIO)
+# Do not buffer chip-level designs
+# by default, IO ports will be buffered
+# to not buffer IO ports, set environment variable
+# DONT_BUFFER_PORT = 1
+if { ![info exists ::env(FOOTPRINT)] } {
+  if { ![info exists ::env(DONT_BUFFER_PORTS)] || $::env(DONT_BUFFER_PORTS) == 0 } {
+    puts "Perform port buffering..."
+    buffer_ports
+  }
 }
 
-if { [env_var_exists_and_non_empty SWAP_ARITH_OPERATORS] } {
-  # Enable sanity checker until replace_arith_modules becomes stable
-  set_debug_level ODB replace_design_check_sanity 1
-  replace_arith_modules
-  global_placement -incremental
+puts "Perform buffer insertion..."
+set additional_args ""
+if { [info exists ::env(CAP_MARGIN)] && $::env(CAP_MARGIN) > 0.0} {
+  puts "Cap margin $::env(CAP_MARGIN)"
+  append additional_args " -cap_margin $::env(CAP_MARGIN)"
+}
+if { [info exists ::env(SLEW_MARGIN)] && $::env(SLEW_MARGIN) > 0.0} {
+  puts "Slew margin $::env(SLEW_MARGIN)"
+  append additional_args " -slew_margin $::env(SLEW_MARGIN)"
 }
 
-repair_design_helper
+repair_design {*}$additional_args
+
+if { [info exists env(TIE_SEPARATION)] } {
+  set tie_separation $env(TIE_SEPARATION)
+} else {
+  set tie_separation 0
+}
+
+# Repair tie lo fanout
+puts "Repair tie lo fanout..."
+set tielo_cell_name [lindex $env(TIELO_CELL_AND_PORT) 0]
+set tielo_lib_name [get_name [get_property [lindex [get_lib_cell $tielo_cell_name] 0] library]]
+set tielo_pin $tielo_lib_name/$tielo_cell_name/[lindex $env(TIELO_CELL_AND_PORT) 1]
+repair_tie_fanout -separation $tie_separation $tielo_pin
+
+# Repair tie hi fanout
+puts "Repair tie hi fanout..."
+set tiehi_cell_name [lindex $env(TIEHI_CELL_AND_PORT) 0]
+set tiehi_lib_name [get_name [get_property [lindex [get_lib_cell $tiehi_cell_name] 0] library]]
+set tiehi_pin $tiehi_lib_name/$tiehi_cell_name/[lindex $env(TIEHI_CELL_AND_PORT) 1]
+repair_tie_fanout -separation $tie_separation $tiehi_pin
 
 # hold violations are not repaired until after CTS
 
@@ -36,6 +65,4 @@ report_metrics 3 "resizer" true false
 puts "Instance count before $instance_count_before, after [sta::network_leaf_instance_count]"
 puts "Pin count before $pin_count_before, after [sta::network_leaf_pin_count]"
 
-source_step_tcl POST RESIZE
-
-orfs_write_db $::env(RESULTS_DIR)/3_4_place_resized.odb
+write_db $::env(RESULTS_DIR)/3_4_place_resized.odb

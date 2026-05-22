@@ -3,22 +3,16 @@
 set -euo pipefail
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-ISSUE_TARGET=$(basename $1)
-ISSUE_DEST=$(dirname $1)
-
-echo "Creating issue for target ${ISSUE_TARGET} in ${ISSUE_DEST}"
-
 currentDate=$(date +"%Y-%m-%d_%H-%M")
 ISSUE_TAG=${ISSUE_TAG:-"${DESIGN_NICKNAME}_${PLATFORM}_${FLOW_VARIANT}_${currentDate}"}
 ISSUE_CP_DESIGN_FILE_VARS="SDC_FILE \
                            VERILOG_FILES \
-                           SYNTH_NETLIST_FILES \
+                           CACHED_NETLIST \
                            FOOTPRINT_TCL \
                            FOOTPRINT \
                            SIG_MAP_FILE \
                            IO_CONSTRAINTS \
-                           MACRO_PLACEMENT_TCL \
-                           MACRO_WRAPPERS \
+                           MACRO_PLACEMENT \
                            RTLMP_CONFIG_FILE \
                            DFF_LIB_FILE "
 ISSUE_CP_PLATFORM_FILE_VARS="LIB_FILES \
@@ -37,7 +31,7 @@ ISSUE_CP_PLATFORM_FILE_VARS="LIB_FILES \
                              PDN_TCL \
                              POST_PDN_TCL \
                              POST_CTS_TCL \
-                             PRE_GLOBAL_ROUTE_TCL \
+                             PRE_GLOBAL_ROUTE \
                              FASTROUTE_TCL \
                              POST_DETAIL_ROUTE_TCL \
                              RCX_RULES \
@@ -56,8 +50,8 @@ if [[ ! -v EXCLUDE_PLATFORM ]]; then
     fi
 fi
 
-VARS_BASENAME=${WORK_HOME}/vars-$DESIGN_NICKNAME-$PLATFORM-$FLOW_VARIANT
-RUN_ME_SCRIPT=${WORK_HOME}/run-me-$DESIGN_NICKNAME-$PLATFORM-$FLOW_VARIANT.sh
+VARS_BASENAME=vars-$DESIGN_NICKNAME-$PLATFORM-$FLOW_VARIANT
+RUN_ME_SCRIPT=run-me-$DESIGN_NICKNAME-$PLATFORM-$FLOW_VARIANT.sh
 
 for i in $ISSUE_CP_FILE_VARS ; do
     if [ -v ${i} ]; then
@@ -73,39 +67,22 @@ ISSUE_CP_FILES+="${ISSUE_CP_FILES_PLATFORM} \
     $VARS_BASENAME.tcl \
     $VARS_BASENAME.gdb"
 
-ISSUE_SCRIPT=${SCRIPTS_DIR}/${ISSUE_TARGET}.tcl
-if grep -q -E "synth_preamble|yosys -import" "${ISSUE_SCRIPT}"; then
-    IS_YOSYS=1
-else
-    IS_YOSYS=0
-fi
-
-if [ "$IS_YOSYS" -eq 1 ]; then
-cat > ${RUN_ME_SCRIPT} <<EOF
-#!/usr/bin/env bash
-source ${VARS_BASENAME}.sh
-export PYTHON_EXE=\${PYTHON_EXE:-\$(command -v python3)}
-yosys ${YOSYS_FLAGS:-} -c \${SCRIPTS_DIR}/${ISSUE_TARGET}.tcl
-EOF
-else
 cat > ${RUN_ME_SCRIPT} <<EOF
 #!/usr/bin/env bash
 source ${VARS_BASENAME}.sh
 if [[ ! -z \${GDB+x} ]]; then
-    gdb --args openroad -no_init -threads ${NUM_CORES:-1} \${SCRIPTS_DIR}/${ISSUE_TARGET}.tcl
+    gdb --args openroad -no_init \${SCRIPTS_DIR}/$1.tcl
 else
-    openroad -no_init -threads ${NUM_CORES:-1} \${SCRIPTS_DIR}/${ISSUE_TARGET}.tcl
+    openroad -no_init \${SCRIPTS_DIR}/$1.tcl
 fi
 EOF
-fi
 chmod +x ${RUN_ME_SCRIPT}
 
 rm -f ${VARS_BASENAME}.sh ${VARS_BASENAME}.tcl ${VARS_BASENAME}.gdb || true
 
 $DIR/generate-vars.sh ${VARS_BASENAME}
 
-TAR_NAME=${ISSUE_DEST}/${ISSUE_TARGET}_${ISSUE_TAG}.tar.gz
-echo "Archiving issue to ${TAR_NAME}"
+echo "Archiving issue to $1_${ISSUE_TAG}.tar.gz"
 # if pigz is installed, use it instead of gzip
 if command -v pigz &> /dev/null; then
     COMPRESS=pigz
@@ -119,13 +96,13 @@ echo "Using $COMPRESS to compress tar file"
 if [ -v FULL_ISSUE ]; then
     DESIGN_PLATFORM_FILES="$DESIGN_DIR $PLATFORM_DIR"
 else
-    DESIGN_PLATFORM_FILES="$DESIGN_CONFIG $PLATFORM_DIR/config*.mk"
+    DESIGN_PLATFORM_FILES="$DESIGN_CONFIG $PLATFORM_DIR/config.mk"
 fi
 
 tar --use-compress-program=${COMPRESS} \
-    --ignore-failed-read -chf ${TAR_NAME} \
-    --transform="s|^|${ISSUE_TARGET}_${ISSUE_TAG}/|S" \
-    --transform="s|^${ISSUE_TARGET}_${ISSUE_TAG}${FLOW_HOME}/|${ISSUE_TARGET}_${ISSUE_TAG}/|S" \
+    --ignore-failed-read -chf $1_${ISSUE_TAG}.tar.gz \
+    --transform="s|^|$1_${ISSUE_TAG}/|S" \
+    --transform="s|^$1_${ISSUE_TAG}${FLOW_HOME}/|$1_${ISSUE_TAG}/|S" \
     $DESIGN_PLATFORM_FILES \
     $LOG_DIR \
     $OBJECTS_DIR \
@@ -136,12 +113,12 @@ tar --use-compress-program=${COMPRESS} \
 
 if [ -v EXCLUDE_PLATFORM ]; then
     # Remove liberty and lef files from tar file
-    gunzip -f ${TAR_NAME}
-    tar --list --file ${ISSUE_TARGET}_${ISSUE_TAG}.tar | grep -iE "*.(lib|lef|tlef)$" | xargs -r tar --delete --file ${ISSUE_TARGET}_${ISSUE_TAG}.tar
-    gzip ${ISSUE_TARGET}_${ISSUE_TAG}.tar
+    gunzip -f $1_${ISSUE_TAG}.tar.gz
+    tar --list --file $1_${ISSUE_TAG}.tar | grep -iE "*.(lib|lef|tlef)$" | xargs -r tar --delete --file $1_${ISSUE_TAG}.tar
+    gzip $1_${ISSUE_TAG}.tar
 fi
 
 if [ ! -z ${COPY_ISSUE+x} ]; then
     mkdir -p ${COPY_ISSUE} ;
-    cp ${TAR_NAME} ${COPY_ISSUE} ;
+    cp $1_${ISSUE_TAG}.tar.gz ${COPY_ISSUE} ;
 fi

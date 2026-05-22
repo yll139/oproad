@@ -1,175 +1,116 @@
-# OpenROAD Flow
+# oproad
 
-[![Build Status](https://jenkins.openroad.tools/buildStatus/icon?job=OpenROAD-flow-scripts-Public%2Fpublic_tests_all%2Fmaster)](https://jenkins.openroad.tools/view/Public/job/OpenROAD-flow-scripts-Public/job/public_tests_all/job/master/)
-[![Docs](https://readthedocs.org/projects/openroad-flow-scripts/badge/?version=latest)](https://openroad-flow-scripts.readthedocs.io/en/latest/?badge=latest)
+`oproad` is a small Docker-only wrapper around OpenROAD-flow-scripts for local
+ASIC experiments. The host machine only needs Git and Docker. OpenROAD, Yosys,
+Icarus Verilog, make, and the supported platform files live inside the Docker
+image.
 
-OpenROAD-flow-scripts (ORFS) is a fully autonomous, RTL-GDSII flow
-for rapid architecture and design space exploration, early prediction
-of QoR and detailed physical design implementation. However, ORFS
-also enables manual intervention for finer user control of individual
-flow stages through Tcl commands and Python APIs.
+Supported host systems:
 
-```mermaid
-%%{init: { 'logLevel': 'debug', 'theme': 'dark'
-  } }%%
-timeline
-  title RTL-GDSII Using OpenROAD-flow-scripts
-  Synthesis
-    : Inputs  [RTL, SDC, .lib, .lef]
-    : Logic Synthesis  (Yosys)
-    : Output files  [Netlist, SDC]
-  Floorplan
-    : Floorplan Initialization
-    : IO placement  (random)
-    : Timing-driven mixed-size placement
-    : Macro placement
-    : Tapcell and welltie insertion
-    : PDN generation
-  Placement
-    : Global placement without placed IOs
-    : IO placement  (optimized)
-    : Global placement with placed IOs
-    : Resizing and buffering
-    : Detailed placement
-  CTS : Clock Tree Synthesis
-    : Timing optimization
-    : Filler cell insertion
-  Routing
-    : Global Routing
-    : Detailed Routing
-  Finishing
-    : Metal Fill insertion
-    : Signoff timing report
-    : Generate GDSII  (KLayout)
-    : DRC/LVS check (KLayout)
+- macOS and Linux: `./oproad`
+- Windows PowerShell: `.\oproad.ps1`
+- Windows cmd.exe: `oproad.cmd`
+
+Supported platforms included in this repo:
+
+- `nangate45`
+- `nangate15`
+
+## Build
+
+```bash
+git clone https://github.com/yll139/oproad.git
+cd oproad
+./oproad build-image
 ```
 
-## Tool Installation
+On Windows PowerShell:
 
-There are multiple ways to install and develop OpenROAD and ORFS. However, the best option depends on your use case, experience level, and personal preference.
-
-
-> **Recommendation for new users:**  
-> If you are new to OpenROAD-flow-scripts, Docker can be a reliable way to get started since it avoids most dependency and environment issues.  
->  
-> On supported platforms, using the pre-built binaries can be an even simpler option as it avoids building from source.  
->  
-> Alternatively, the Bazel-based flow also avoids manual dependency installation (aside from installing Bazelisk itself), similar to how Docker requires installing Docker.
-
-
-
-### Use Bazel, avoid installing anything at all and adapt the flow to your needs in your own repository
-
-[bazel-orfs](https://github.com/The-OpenROAD-Project/bazel-orfs) provides a seamless, reproducible way to manage dependencies and adapt the flow without requiring manual installations(no Docker images, sudo bash scripts, etc.)
-
-By leveraging [Bazel](https://bazel.build/)'s robust build system, all dependencies are automatically resolved, versioned, and built in a consistent environment. This eliminates setup complexity, ensures fast incremental builds, and allows for easy customization of the flow, making it an efficient choice for both [beginners](https://github.com/The-OpenROAD-Project/RegFileStudy) and [advanced](https://github.com/The-OpenROAD-Project/megaboom) users.
-
-### Docker Based Installation
-
-To ease dependency installation issues, ORFS uses docker images.
-Docker image includes ORFS binaries, applications as well as all
-required dependencies. All of the flow tools are encapsulated
-inside the container image.
-
-If `Docker` is not installed already, install latest docker tool
-based on OS from [here](https://docs.docker.com/engine/install/).
-
-To manage docker as non-root user and verify that you can run
-`docker` commands without `sudo` must complete steps from
-[here](https://docs.docker.com/engine/install/linux-postinstall/).
-
-#### Build ORFS with Docker
-
-Document for detailed steps on docker based installation found
-[here](./docs/user/BuildWithDocker.md).
-
-### Pre-built Binaries
-
-You can download, set up and run ORFS easily with pre-built
-binaries, including OpenROAD, Yosys and Klayout. See instructions
-[here](./docs/user/BuildWithPrebuilt.md).
-
-> **Thanks** to [Precision Innovations](https://precisioninno.com/) for
-> providing and supporting OpenROAD based binaries.
-
-> **Note** Only the latest version of OpenROAD is guaranteed to work with
-> the latest version of ORFS.
-
-> **Disclaimer** The versions of OpenROAD, Yosys and Klayout provided by
-> other third-party vendors are not guaranteed to work with ORFS.
-
-### Build from sources locally
-
-Document for detailed local build from sources and installation steps found [here](./docs/user/BuildLocally.md).
-
-## Using the Flow
-
-- For details about the OpenROAD and the available features and
-  individual flows commands, see the documentation
-  [here](https://openroad.readthedocs.io/en/latest/).
-- For details about automated flow setup, see ORFS docs
-  [here](https://openroad-flow-scripts.readthedocs.io/en/latest/index2.html#getting-started-with-openroad-flow-scripts).
-- Flow tutorial to run the complete OpenROAD based flow from
-  RTL-GDSII, see the tutorial
-  [here](https://openroad-flow-scripts.readthedocs.io/en/latest/tutorials/FlowTutorial.html).
-- To watch ORFS flow tutorial videos, check
-  [here](https://theopenroadproject.org/video).
-
-## Building from your own git repository
-
-ORFS supports hosting projects in your own git repository
-without the need to fork ORFS.
-
-To build from your own git repository:
-
-    cd /home/me/myproject
-    make --file=~/OpenROAD-flow-scripts/flow/Makefile DESIGN_CONFIG=somefolder/config.mk ...
-
-## Running a quick smoke-test of ORFS on your own Verilog
-
-You can [run ORFS on your own Verilog files](./flow/designs/asap7/minimal/README.md)
-without setting up a project or moving your Verilog files and even learn
-a thing or two about floorplan, placement and routing
-before you create an .sdc file and a config.mk file.
-
-## Citing this Work
-
-If you use this software in any published work, we would appreciate a citation!
-Please use the following references:
-
-```
-@article{ajayi2019openroad,
-  title={OpenROAD: Toward a Self-Driving, Open-Source Digital Layout Implementation Tool Chain},
-  author={Ajayi, T and Blaauw, D and Chan, TB and Cheng, CK and Chhabria, VA and Choo, DK and Coltella, M and Dobre, S and Dreslinski, R and Foga{\c{c}}a, M and others},
-  journal={Proc. GOMACTECH},
-  pages={1105--1110},
-  year={2019}
-}
+```powershell
+git clone https://github.com/yll139/oproad.git
+cd oproad
+.\oproad.ps1 build-image
 ```
 
-A copy of this paper is available
-[here](http://people.ece.umn.edu/users/sachin/conf/gomactech19.pdf) (PDF).
+The default Docker image tag is `oproad:latest`. Override it with
+`OPROAD_IMAGE` if needed.
 
-```
-@inproceedings{ajayi2019toward,
-  title={Toward an open-source digital flow: First learnings from the openroad project},
-  author={Ajayi, Tutu and Chhabria, Vidya A and Foga{\c{c}}a, Mateus and Hashemi, Soheil and Hosny, Abdelrahman and Kahng, Andrew B and Kim, Minsoo and Lee, Jeongsup and Mallappa, Uday and Neseem, Marina and others},
-  booktitle={Proceedings of the 56th Annual Design Automation Conference 2019},
-  pages={1--4},
-  year={2019}
-}
+## Create a Project
+
+Only project creation specifies the process/platform:
+
+```bash
+./oproad new nangate15 dec 1.0 ./workspace
 ```
 
-A copy of this paper is available
-[here](https://vlsicad.ucsd.edu/Publications/Conferences/371/c371.pdf) (PDF).
+This creates `./workspace/dec`. The selected platform and design are stored in
+`./workspace/dec/.asic_project`.
 
-If you like the tools, please give us a star on our GitHub repos!
+After that, commands read the project metadata automatically. Do not pass the
+platform again:
 
-## License
+```bash
+./oproad sim ./workspace/dec
+./oproad synth ./workspace/dec
+./oproad report ./workspace/dec
+./oproad implement ./workspace/dec
+./oproad clean ./workspace/dec
+```
 
-The OpenROAD-flow-scripts repository (build and run scripts) has a BSD 3-Clause License.
-The flow relies on several tools, platforms and designs that each have their own licenses:
+If your shell is already inside the project directory, the project argument is
+optional:
 
-- Find the tool license at: `OpenROAD-flow-scripts/tools/{tool}/` or `OpenROAD-flow-scripts/tools/OpenROAD/src/{tool}/`.
-- Find the platform license at: `OpenROAD-flow-scripts/flow/platforms/{platform}/`.
-- Find the design license at: `OpenROAD-flow-scripts/flow/designs/src/{design}/`.
+```bash
+cd ./workspace/dec
+../../oproad synth
+../../oproad report
+```
+
+## Delete a Project
+
+```bash
+./oproad delete ./workspace/dec
+```
+
+Always delete projects through the host-side `oproad` script instead of manually
+removing the directory. The wrapper mounts the project into Docker and the
+runner also creates matching ORFS working copies, result folders, reports, logs,
+and objects inside the container runtime. `oproad delete` removes the local
+project directory and asks the container runner to clean the corresponding ORFS
+copies in the same operation.
+
+## Finish Mode
+
+By default, `nangate15` uses a light finish stage that produces final reports,
+netlist, DEF, and ODB while skipping GDS/KLayout merge. To force full finish:
+
+```bash
+OPROAD_FINISH_MODE=full ./oproad implement ./workspace/dec
+```
+
+Valid values are `auto`, `light`, `full`, and `skip`.
+
+## Shell
+
+To inspect the container manually:
+
+```bash
+./oproad shell .
+```
+
+Users should run `oproad` only on the host. Inside the container, the host
+wrapper calls `oproad-runner` as an implementation detail alongside `openroad`,
+`yosys`, and `iverilog`.
+
+## VS Code
+
+VS Code tasks are included under `.vscode/tasks.json`. Open this repository in
+VS Code and use `Terminal -> Run Task...` to build the image, create projects,
+simulate, synthesize, report, implement, clean, delete, or open a container
+shell.
+
+These tasks still call the host-side `oproad` wrapper. Project directories are
+bind-mounted into Docker, so VS Code edits and container-generated outputs stay
+synchronized on the host filesystem.
+
+See [docs-vscode.md](./docs-vscode.md).

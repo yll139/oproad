@@ -71,15 +71,7 @@ ops = {
 }
 
 ERRORS = 0
-WARNS = 0
 
-# Check for new warnings
-for field, build_value in metadata.items():
-    if field not in rules.keys() and "__warnings__count:" in field:
-        print(f"[WARN] {field} fail test: {build_value} (New warning)")
-        WARNS += 1
-
-# Check for rules
 for field, rule in rules.items():
     compare = rule["compare"]
     op = ops[compare]
@@ -87,47 +79,31 @@ for field, rule in rules.items():
 
     if field in metadata.keys():
         build_value = try_number(metadata[field])
-    elif "__warnings__count:" in field:
-        # Metric is a warning count. If the value is missing,
-        # there were zero warnings
-        build_value = 0.0
     else:
         print(f"[ERROR] Value not found for {field}.")
         sys.exit(1)
 
-    # Convert to integer if possible
-    if isinstance(rule_value, float) and rule_value.is_integer():
-        rule_value = int(rule_value)
-    if isinstance(build_value, float) and build_value.is_integer():
-        build_value = int(build_value)
+    formatError = list()
+    if not isinstance(rule_value, float):
+        formatError.append("rule_value")
+    if not isinstance(build_value, float):
+        formatError.append("build_value")
+    if len(formatError) != 0:
+        print(
+            f"Error: field {field}, has invalid float format for "
+            f"{', '.join(formatError)}"
+        )
+        ERRORS += 1
+        continue
 
-    try:
-        if op(build_value, rule_value):
-            PRE = "[INFO]"
-            CHECK = "pass"
-        elif rule.get("level") == "warning":
-            # Warning-level rules never fail the build, but the prior
-            # message ("[WARN] field pass test: a == b") was misleading
-            # when a != b -- the build_value clearly differed from the
-            # rule_value yet "pass" implied a match. Say "differs"
-            # instead so the diagnostic reads naturally for fields like
-            # the netlist hash where the user wants visibility without
-            # an error.
-            PRE = "[WARN]"
-            CHECK = "differs"
-            WARNS += 1
-        else:
-            PRE = "[ERROR]"
-            CHECK = "fail"
-            ERRORS += 1
-    except TypeError:
-        # Handle cases where types are not comparable (e.g., string vs. number)
+    if op(build_value, rule_value):
+        PRE = "[INFO]"
+        CHECK = "pass"
+    else:
         PRE = "[ERROR]"
         CHECK = "fail"
         ERRORS += 1
     print(PRE, field, CHECK, "test:", build_value, compare, rule_value)
-
-print(f"Metadata check warnings: {WARNS}")
 
 if ERRORS == 0:
     print(f"All metadata rules passed ({len(rules)} rules)")

@@ -2,93 +2,111 @@
 
 from math import ceil, isinf
 from os import chdir, getcwd
-from os.path import isfile
+from os.path import isfile, abspath
 from re import sub
 import argparse
-import fnmatch
 import json
 import operator
-import os
 import sys
+import requests
 
 
-def gen_rule_file(
-    rules_file,
-    new_rules_file,
-    update,
-    tighten,
-    failing,
-    variant,
-    metrics_file=None,
-    metrics_to_consider=[],
-):
-    with open(metrics_file, "r") as f:
-        metrics = json.load(f)
-    if not isinstance(metrics, dict):
-        print(f"[ERROR] Invalid format for reference metrics {metrics_file}")
-        sys.exit(1)
+def get_golden(platform, design, api_base_url):
+    try:
+        response = requests.get(
+            api_base_url + f"/golden?platform={platform}&design={design}&variant=base"
+        )
 
+        # Check if the request was successful (status code 200)
+        if response.status_code == 200 and "error" not in response.json():
+            # Parse the JSON response
+            data = response.json()
+
+            return data, None
+        else:
+            print("API request failed")
+            return None, "API request failed"
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+        return None, f"An error occurred: {str(e)}"
+
+
+def get_metrics(commitSHA, platform, design, api_base_url):
+    try:
+        response = requests.get(
+            api_base_url
+            + f"/commit?commitSHA={commitSHA}&platform={platform}&design={design}&variant=base"
+        )
+
+        # Check if the request was successful (status code 200)
+        if response.status_code == 200 and "error" not in response.json():
+            # Parse the JSON response
+            data = response.json()
+
+            return data, None
+        else:
+            print("API request failed")
+            return None, "API request failed"
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+        return None, f"An error occurred: {str(e)}"
+
+
+def update_rules(designDir, variant, golden_metrics, overwrite):
+    if overwrite:
+        gen_rule_file(
+            designDir,  # design directory
+            True,  # update
+            False,  # tighten
+            False,  # failing
+            variant,  # variant
+            golden_metrics,  # metrics needed for update, default is {} in case of file
+        )
+    else:
+        gen_rule_file(
+            designDir,  # design directory
+            False,  # update
+            True,  # tighten
+            False,  # failing
+            variant,  # variant
+            golden_metrics,  # metrics needed for update, default is {} in case of file
+        )
+
+
+def gen_rule_file(design_dir, update, tighten, failing, variant, golden_metrics={}):
+    original_directory = getcwd()
+    chdir(design_dir)
+
+    metrics_file = f"metadata-{variant}-ok.json"
+    rules_file = f"rules-{variant}.json"
     rules = dict()
+
+    if golden_metrics == {}:
+        if isfile(metrics_file):
+            with open(metrics_file, "r") as f:
+                metrics = json.load(f)
+        else:
+            print(f"[ERROR] File not found {abspath(metrics_file)}")
+            sys.exit(1)
+    else:
+        metrics = golden_metrics
+
     if isfile(rules_file):
         with open(rules_file, "r") as f:
             OLD_RULES = json.load(f)
     else:
-        print(f"[WARNING] No old rules file found {rules_file}")
+        print(f"[WARNING] File not found {abspath(rules_file)}")
         OLD_RULES = None
-
-    # Notes
-    # - Apply tighter margin on timing__setup__ws than timing__setup__tns
-    #   because WNS is more important than TNS.
-    # - Apply the consistent margins on timing__setup__* and timing__hold__*
-    # - 'period_padding' mode is used for timing__setup__* and timing__hold__*
-    #   to give small margin based on clock period to avoid failures by small
-    #   violations.
 
     # dict format
     # 'metric_name': {
-    #     'mode': <str>, one of ['direct', 'literal', 'sum_fixed', 'period',
-    #                           'padding', 'period_padding', 'abs_padding',
-    #                           'metric'].  'literal' propagates the metric
-    #                           value verbatim (e.g. a hash string) and
-    #                           skips all numeric padding/rounding.
     #     'padding': <float>, percentage of padding to use
     #     'fixed': <float>, sum this number instead of using % padding
     #     'round_value': <bool>, use the rounded value for the rule
-    #     'compare': <str>, one of ['<', '>', '<=', '>=', '==', '!=']
-    #     'metric': <str>, when mode is 'metric', use this metric to compute
-    #                     the rule value
-    #     'min_max': <function>, one of [min, max], optional
-    #     'min_max_direct': <float>, optional
-    #     'min_max_sum': <float>, optional
-    #     'min_max_period': <float>, optional
-    #     'level': <bool>, severity level. ['warning' or
-    #                                        others (means ERROR, default) ]
     # }
 
     rules_dict = {
-        # all stages
-        "*flow__warnings__count:*": {
-            "mode": "direct",
-            "round_value": True,
-            "compare": "<=",
-            "level": "warning",
-        },
         # synth
-        # Yosys netlist hash fingerprints. `mode: literal` propagates
-        # the string value verbatim; `level: warning` means a mismatch
-        # surfaces as a [WARN] diagnostic in checkMetadata.py without
-        # failing the build, matching how rules-base.json already
-        # treats warning counts.
-        "synth__canonical_netlist__hash": {
-            "mode": "literal",
-            "compare": "==",
-            "level": "warning",
-        },
-        "synth__netlist__hash": {
-            "mode": "literal",
-            "compare": "==",
-            "level": "warning",
-        },
         "synth__design__instance__area__stdcell": {
             "mode": "padding",
             "padding": 15,
@@ -101,6 +119,7 @@ def gen_rule_file(
             "round_value": True,
             "compare": "==",
         },
+        # floorplan
         # place
         "placeopt__design__instance__area": {
             "mode": "padding",
@@ -134,64 +153,7 @@ def gen_rule_file(
             "round_value": True,
             "compare": "<=",
         },
-        "cts__timing__setup__ws": {
-            "mode": "period_padding",
-            "padding": 5,
-            "round_value": False,
-            "compare": ">=",
-        },
-        "cts__timing__setup__tns": {
-            "mode": "period_padding",
-            "padding": 20,
-            "round_value": False,
-            "compare": ">=",
-        },
-        "cts__timing__hold__ws": {
-            "mode": "period_padding",
-            "padding": 5,
-            "round_value": False,
-            "compare": ">=",
-        },
-        "cts__timing__hold__tns": {
-            "mode": "period_padding",
-            "padding": 20,
-            "round_value": False,
-            "compare": ">=",
-        },
         # route
-        "globalroute__antenna_diodes_count": {
-            "mode": "metric",
-            "padding": 0.1,
-            "metric": "globalroute__route__net",
-            "min_max": max,
-            "min_max_direct": 100,
-            "round_value": True,
-            "compare": "<=",
-        },
-        "globalroute__timing__setup__ws": {
-            "mode": "period_padding",
-            "padding": 5,
-            "round_value": False,
-            "compare": ">=",
-        },
-        "globalroute__timing__setup__tns": {
-            "mode": "period_padding",
-            "padding": 20,
-            "round_value": False,
-            "compare": ">=",
-        },
-        "globalroute__timing__hold__ws": {
-            "mode": "period_padding",
-            "padding": 5,
-            "round_value": False,
-            "compare": ">=",
-        },
-        "globalroute__timing__hold__tns": {
-            "mode": "period_padding",
-            "padding": 20,
-            "round_value": False,
-            "compare": ">=",
-        },
         "detailedroute__route__wirelength": {
             "mode": "padding",
             "padding": 15,
@@ -209,37 +171,10 @@ def gen_rule_file(
             "round_value": True,
             "compare": "<=",
         },
-        "detailedroute__antenna_diodes_count": {
-            "mode": "metric",
-            "padding": 0.1,
-            "metric": "detailedroute__route__net",
-            "min_max": max,
-            "min_max_direct": 100,
-            "round_value": True,
-            "compare": "<=",
-        },
         # finish
         "finish__timing__setup__ws": {
-            "mode": "period_padding",
+            "mode": "period",
             "padding": 5,
-            "round_value": False,
-            "compare": ">=",
-        },
-        "finish__timing__setup__tns": {
-            "mode": "period_padding",
-            "padding": 20,
-            "round_value": False,
-            "compare": ">=",
-        },
-        "finish__timing__hold__ws": {
-            "mode": "period_padding",
-            "padding": 5,
-            "round_value": False,
-            "compare": ">=",
-        },
-        "finish__timing__hold__tns": {
-            "mode": "period_padding",
-            "padding": 20,
             "round_value": False,
             "compare": ">=",
         },
@@ -248,6 +183,29 @@ def gen_rule_file(
             "padding": 15,
             "round_value": True,
             "compare": "<=",
+        },
+        "finish__timing__drv__setup_violation_count": {
+            "mode": "metric",
+            "padding": 5,
+            "metric": "placeopt__design__instance__count__stdcell",
+            "round_value": True,
+            "compare": "<=",
+        },
+        "finish__timing__drv__hold_violation_count": {
+            "mode": "padding",
+            "padding": 25,
+            "min_max": max,
+            "min_max_sum": 100,
+            "round_value": True,
+            "compare": "<=",
+        },
+        "finish__timing__wns_percent_delay": {
+            "mode": "padding",
+            "padding": 20,
+            "min_max": min,
+            "min_max_sum": -10,
+            "round_value": False,
+            "compare": ">=",
         },
     }
 
@@ -260,190 +218,140 @@ def gen_rule_file(
         "!=": operator.ne,
     }
 
-    period_list = metrics.get("constraints__clocks__details")
+    period_list = metrics["constraints__clocks__details"]
 
-    period = 0.0
-    if period_list:
-        period = float(sub(r"^.*: ", "", period_list[0]))
-        if len(period_list) != 1:
-            print(
-                f"[WARNING] Multiple clocks not supported. Will use first clock: {period_list[0]}."
-            )
-    else:
+    period = float(sub(r"^.*: ", "", period_list[0]))
+    if len(period_list) != 1:
         print(
-            "[WARNING] 'constraints__clocks__details' not found or is empty in metrics. Clock-related rules might be affected."
+            f"[WARNING] Multiple clocks not supported. Will use first clock: {period_list[0]}."
         )
 
-    format_str = "| {:45} | {:10} | {:10} | {:8} |\n"
+    format_str = "| {:45} | {:8} | {:8} | {:8} |\n"
     change_str = ""
+    for field, option in rules_dict.items():
+        if field not in metrics.keys():
+            print(
+                f"[ERROR] Metric {field} not found in "
+                f"metrics file: {metrics_file} or golden metrics."
+            )
+            sys.exit(1)
 
-    processed_fields = set()
-    for pattern, option in rules_dict.items():
-        matching_fields = []
-        # Find all metric fields that match this pattern.
-        if "*" in pattern:
-            for metric_field in sorted(metrics.keys()):
-                if (
-                    fnmatch.fnmatch(metric_field, pattern)
-                    and metric_field not in processed_fields
-                ):
-                    matching_fields.append(metric_field)
-        elif pattern in metrics and pattern not in processed_fields:
-            matching_fields.append(pattern)
+        if isinstance(metrics[field], str):
+            print(f"[WARNING] Skipping string field {field} = {metrics[field]}")
+            continue
 
-        for field in matching_fields:
-            # Replace ':' with '__' as the dashboard DB does not accept
-            # ':' in # field names.
-            if ":" in field:
-                field = field.replace(":", "__")
-            processed_fields.add(field)
-            if isinstance(metrics[field], str) and option["mode"] != "literal":
-                print(f"[WARNING] Skipping string field {field} = {metrics[field]}")
-                continue
+        if len(period_list) != 1 and field == "globalroute__timing__clock__slack":
+            print("[WARNING] Skipping clock slack until multiple clocks support.")
+            continue
 
-            if len(period_list) != 1 and field == "globalroute__timing__clock__slack":
-                print("[WARNING] Skipping clock slack until multiple clocks support.")
-                continue
+        rule_value = None
+        if option["mode"] == "direct":
+            rule_value = metrics[field]
 
-            rule_value = None
-            if option["mode"] == "direct":
-                rule_value = metrics[field]
+        elif option["mode"] == "sum_fixed":
+            rule_value = metrics[field] + option["padding"]
 
-            elif option["mode"] == "literal":
-                rule_value = metrics[field]
+        elif option["mode"] == "period":
+            rule_value = metrics[field] - period * option["padding"] / 100
+            rule_value = min(rule_value, 0)
 
-            elif option["mode"] == "sum_fixed":
-                rule_value = metrics[field] + option["padding"]
+        elif option["mode"] == "padding":
+            rule_value = metrics[field] * (1 + option["padding"] / 100)
 
-            elif option["mode"] == "period":
-                rule_value = metrics[field] - period * option["padding"] / 100
-                rule_value = min(rule_value, 0)
+        elif option["mode"] == "abs_padding":
+            rule_value = abs(metrics[field]) * (1 + option["padding"] / 100)
 
-            elif option["mode"] == "padding":
-                rule_value = metrics[field] * (1 + option["padding"] / 100)
+        elif option["mode"] == "metric":
+            rule_value = metrics[option["metric"]] * option["padding"] / 100
 
-            elif option["mode"] == "period_padding":
-                negative_slack = min(metrics[field], 0)
-                rule_value = negative_slack - max(
-                    negative_slack * option["padding"] / 100,
-                    period * option["padding"] / 100,
+        if (
+            field == "cts__design__instance__count__setup_buffer"
+            or field == "cts__design__instance__count__hold_buffer"
+        ):
+            rule_value = max(rule_value, metrics[field] * 1.1)
+
+        if "min_max" in option.keys():
+            if "min_max_direct" in option.keys():
+                rule_value = option["min_max"](rule_value, option["min_max_direct"])
+            elif "min_max_sum" in option.keys():
+                rule_value = option["min_max"](
+                    rule_value + option["min_max_sum"], option["min_max_sum"]
                 )
-
-            elif option["mode"] == "abs_padding":
-                rule_value = abs(metrics[field]) * (1 + option["padding"] / 100)
-
-            elif option["mode"] == "metric":
-                rule_value = metrics[option["metric"]] * option["padding"] / 100
-
-            if (
-                field == "cts__design__instance__count__setup_buffer"
-                or field == "cts__design__instance__count__hold_buffer"
-            ):
-                rule_value = max(rule_value, metrics[field] * 1.1)
-
-            if "min_max" in option.keys():
-                if "min_max_direct" in option.keys():
-                    rule_value = option["min_max"](rule_value, option["min_max_direct"])
-                elif "min_max_sum" in option.keys():
-                    rule_value = option["min_max"](
-                        rule_value + option["min_max_sum"], option["min_max_sum"]
-                    )
-                elif "min_max_period" in option.keys():
-                    rule_value = option["min_max"](
-                        rule_value, -period * option["min_max_period"] / 100.0
-                    )
-                else:
-                    print(
-                        f"[ERROR] Metric {field} has 'min_max' field but no "
-                        "'min_max_direct', 'min_max_sum', or 'min_max_period' field."
-                    )
-                    sys.exit(1)
-
-            if rule_value is None:
-                print(f"[ERROR] Metric {field} has invalid mode {option['mode']}.")
+            else:
+                print(
+                    f"[ERROR] Metric {field} has 'min_max' field but no "
+                    "'min_max_direct' or 'min_max_sum' field."
+                )
                 sys.exit(1)
 
-            if option["mode"] != "literal":
+        if rule_value is None:
+            print(f"[ERROR] Metric {field} has invalid mode {option['mode']}.")
+            sys.exit(1)
+
+        if option["round_value"] and not isinf(rule_value):
+            rule_value = int(round(rule_value))
+        else:
+            rule_value = ceil(rule_value * 100) / 100.0
+
+        if OLD_RULES is not None and field in OLD_RULES.keys():
+            old_rule = OLD_RULES[field]
+            if old_rule["compare"] != option["compare"]:
+                print("[WARNING] Compare operator changed since last update.")
+
+            compare = ops[option["compare"]]
+
+            if compare(rule_value, metrics[field]) and "padding" in option.keys():
+                rule_value = metrics[field] * (1 + option["padding"] / 100)
                 if option["round_value"] and not isinf(rule_value):
                     rule_value = int(round(rule_value))
                 else:
-                    rule_value = float(f"{rule_value:.3g}")
+                    rule_value = ceil(rule_value * 100) / 100.0
 
-            preserve_old_rule = (
-                True
-                if len(metrics_to_consider) > 0 and field not in metrics_to_consider
-                else False
-            )
-            has_old_rule = OLD_RULES is not None and field in OLD_RULES.keys()
+            UPDATE = False
+            if (
+                tighten
+                and rule_value != old_rule["value"]
+                and compare(rule_value, old_rule["value"])
+            ):
+                UPDATE = True
+                change_str += format_str.format(
+                    field, old_rule["value"], rule_value, "Tighten"
+                )
 
-            if has_old_rule and preserve_old_rule:
-                rule_value = OLD_RULES[field]["value"]
+            if failing and not compare(metrics[field], old_rule["value"]):
+                UPDATE = True
+                change_str += format_str.format(
+                    field, old_rule["value"], rule_value, "Failing"
+                )
 
-            if has_old_rule and not preserve_old_rule:
-                old_rule = OLD_RULES[field]
-                if old_rule["compare"] != option["compare"]:
-                    print("[WARNING] Compare operator changed since last update.")
+            if update and old_rule["value"] != rule_value:
+                UPDATE = True
+                change_str += format_str.format(
+                    field, old_rule["value"], rule_value, "Updating"
+                )
 
-                compare = ops[option["compare"]]
+            if not UPDATE:
+                rule_value = old_rule["value"]
 
-                if compare(rule_value, metrics[field]) and "padding" in option.keys():
-                    rule_value = metrics[field] * (1 + option["padding"] / 100)
-                    if option["round_value"] and not isinf(rule_value):
-                        rule_value = int(round(rule_value))
-                    else:
-                        rule_value = float(f"{rule_value:.3g}")
-
-                need_to_update = False
-                if (
-                    tighten
-                    and rule_value != old_rule["value"]
-                    and compare(rule_value, old_rule["value"])
-                ):
-                    need_to_update = True
-                    change_str += format_str.format(
-                        field, old_rule["value"], rule_value, "Tighten"
-                    )
-
-                if failing and not compare(metrics[field], old_rule["value"]):
-                    need_to_update = True
-                    change_str += format_str.format(
-                        field, old_rule["value"], rule_value, "Failing"
-                    )
-
-                if update and old_rule["value"] != rule_value:
-                    need_to_update = True
-                    change_str += format_str.format(
-                        field, old_rule["value"], rule_value, "Updating"
-                    )
-
-                if not need_to_update:
-                    rule_value = old_rule["value"]
-
-            rule_entry = {"value": rule_value, "compare": option["compare"]}
-            if "level" in option:
-                rule_entry["level"] = option["level"]
-            rules[field] = rule_entry
+        rules[field] = dict(value=rule_value, compare=option["compare"])
 
     if len(change_str) > 0:
-        print(f"{os.path.normpath(rules_file)} updates:")
         print(format_str.format("Metric", "Old", "New", "Type"), end="")
         print(format_str.format("------", "---", "---", "----"), end="")
         print(change_str)
 
-    with open(new_rules_file, "w") as f:
+    with open(rules_file, "w") as f:
+        print("[INFO] writing", abspath(rules_file))
         json.dump(rules, f, indent=4)
 
-
-def comma_separated_list(value):
-    if value is None or value == "all":
-        return []
-    return [item.strip() for item in value.split(",")]
+    chdir(original_directory)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Generates or updates rules file for CI."
     )
+    parser.add_argument("dir", help="Path to the design directory.")
     parser.add_argument(
         "-v", "--variant", default="base", help='Flow variant [default="base"].'
     )
@@ -468,32 +376,6 @@ if __name__ == "__main__":
         default=False,
         help="Update failing rules.",
     )
-    parser.add_argument(
-        "-r",
-        "--reference",
-        type=str,
-        default=None,
-        help="Reference metadata file.",
-    )
-    parser.add_argument(
-        "--rules",
-        type=str,
-        default=None,
-        help="Rules input file.",
-    )
-    parser.add_argument(
-        "--new-rules",
-        type=str,
-        default=None,
-        help="Rules output file.",
-    )
-    parser.add_argument(
-        "-m",
-        "--metrics",
-        type=comma_separated_list,
-        default="all",
-        help="Only consider the following metrics to change. [default=all]",
-    )
     args = parser.parse_args()
 
     if not args.update and not args.tighten and not args.failing:
@@ -504,13 +386,4 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit(1)
 
-    gen_rule_file(
-        args.rules,
-        args.new_rules,
-        args.update,
-        args.tighten,
-        args.failing,
-        args.variant,
-        args.reference,
-        args.metrics,
-    )
+    gen_rule_file(args.dir, args.update, args.tighten, args.failing, args.variant)

@@ -1,114 +1,129 @@
 utl::set_metrics_stage "globalroute__{}"
-source $::env(SCRIPTS_DIR)/load.tcl
-erase_non_stage_variables grt
-load_design 4_cts.odb 4_cts.sdc
 
 # This proc is here to allow us to use 'return' to return early from this
 # file which is sourced
-proc global_route_helper { } {
-  source_step_tcl PRE GLOBAL_ROUTE
+proc global_route_helper {} {
+  source $::env(SCRIPTS_DIR)/load.tcl
+  load_design 4_cts.odb 4_cts.sdc
 
-  set res_aware ""
-  append_env_var res_aware ENABLE_RESISTANCE_AWARE -resistance_aware 0
+  if {[info exist ::env(PRE_GLOBAL_ROUTE)]} {
+    source $::env(PRE_GLOBAL_ROUTE)
+  }
 
-  proc do_global_route { res_aware } {
-    set all_args [concat [list \
-      -congestion_report_file $::global_route_congestion_report] \
-      $::env(GLOBAL_ROUTE_ARGS) {*}$res_aware]
+  if {[info exist ::env(FASTROUTE_TCL)]} {
+    source $::env(FASTROUTE_TCL)
+  } else {
+    set_global_routing_layer_adjustment $::env(MIN_ROUTING_LAYER)-$::env(MAX_ROUTING_LAYER) 0.5
+    set_routing_layers -signal $::env(MIN_ROUTING_LAYER)-$::env(MAX_ROUTING_LAYER)
+    if {[info exist ::env(MACRO_EXTENSION)]} {
+      set_macro_extension $::env(MACRO_EXTENSION)
+    }
+  }
+
+  # The default behavior if the user didn't specify GLOBAL_ROUTE_ARGS is to
+  # produce a drc report every 5 iterations.
+  #
+  # If GLOBAL_ROUTE_ARGS is specified, then we do only what the
+  # GLOBAL_ROUTE_ARGS specifies.
+  proc do_global_route {} {
+    set all_args [concat [list -congestion_report_file $::env(REPORTS_DIR)/congestion.rpt] \
+      [expr {[info exists ::env(GLOBAL_ROUTE_ARGS)] ? $::env(GLOBAL_ROUTE_ARGS) : \
+      {-congestion_iterations 30 -congestion_report_iter_step 5 -verbose}}]]
 
     log_cmd global_route {*}$all_args
   }
-  set additional_args ""
-  append_env_var additional_args dbProcessNode -db_process_node 1
-  append_env_var additional_args VIA_IN_PIN_MIN_LAYER -via_in_pin_bottom_layer 1
-  append_env_var additional_args VIA_IN_PIN_MAX_LAYER -via_in_pin_top_layer 1
 
-  log_cmd pin_access {*}$additional_args
+  set result [catch {do_global_route} errMsg]
 
-  set result [catch { do_global_route $res_aware } errMsg]
-
-  if { $result != 0 } {
-    if { !$::env(GENERATE_ARTIFACTS_ON_FAILURE) } {
-      orfs_write_db $::env(RESULTS_DIR)/5_1_grt-failed.odb
+  if {$result != 0} {
+    if {[expr !$::env(GENERATE_ARTIFACTS_ON_FAILURE) || \
+        ![file exists $::env(REPORTS_DIR)/congestion.rpt] || \
+        [file size $::env(REPORTS_DIR)/congestion.rpt] == 0]} {
+      write_db $::env(RESULTS_DIR)/5_1_grt-failed.odb
       error $errMsg
     }
-    orfs_write_sdc $::env(RESULTS_DIR)/5_1_grt.sdc
-    orfs_write_db $::env(RESULTS_DIR)/5_1_grt.odb
+    write_db $::env(RESULTS_DIR)/5_1_grt.odb
     return
   }
 
   set_placement_padding -global \
-    -left $::env(CELL_PAD_IN_SITES_DETAIL_PLACEMENT) \
-    -right $::env(CELL_PAD_IN_SITES_DETAIL_PLACEMENT)
+      -left $::env(CELL_PAD_IN_SITES_DETAIL_PLACEMENT) \
+      -right $::env(CELL_PAD_IN_SITES_DETAIL_PLACEMENT)
 
   set_propagated_clock [all_clocks]
-  log_cmd estimate_parasitics -global_routing
+  estimate_parasitics -global_routing
 
-  if { [env_var_exists_and_non_empty DONT_USE_CELLS] } {
+  if {[info exist ::env(DONT_USE_CELLS)]} {
     set_dont_use $::env(DONT_USE_CELLS)
   }
 
-  if { !$::env(SKIP_INCREMENTAL_REPAIR) } {
-    if { $::env(DETAILED_METRICS) } {
+  if { ![info exists ::env(SKIP_INCREMENTAL_REPAIR)] } {
+    if {[info exist ::env(DETAILED_METRICS)]} {
       report_metrics 5 "global route pre repair design"
     }
 
     # Repair design using global route parasitics
-    repair_design_helper
-    if { $::env(DETAILED_METRICS) } {
+    puts "Perform buffer insertion..."
+    repair_design
+    if {[info exist ::env(DETAILED_METRICS)]} {
       report_metrics 5 "global route post repair design"
     }
 
     # Running DPL to fix overlapped instances
     # Run to get modified net by DPL
-    set dpl_args {}
-    append_env_var dpl_args USE_NEGOTIATION -use_negotiation 0
-    log_cmd global_route -start_incremental
-    log_cmd detailed_placement {*}$dpl_args
+    global_route -start_incremental
+    detailed_placement
     # Route only the modified net by DPL
-    log_cmd global_route -end_incremental {*}$res_aware \
-      -congestion_report_file $::env(REPORTS_DIR)/congestion_post_repair_design.rpt
+    global_route -end_incremental -congestion_report_file $::env(REPORTS_DIR)/congestion_post_repair_design.rpt
 
     # Repair timing using global route parasitics
     puts "Repair setup and hold violations..."
-    log_cmd estimate_parasitics -global_routing
+    estimate_parasitics -global_routing
 
-    repair_timing_helper
+    # process user settings
+    set additional_args "-verbose"
+    append_env_var additional_args SETUP_SLACK_MARGIN -setup_margin 1
+    append_env_var additional_args HOLD_SLACK_MARGIN -hold_margin 1
+    append_env_var additional_args TNS_END_PERCENT -repair_tns 1
+    append_env_var additional_args SKIP_PIN_SWAP -skip_pin_swap 0
+    append_env_var additional_args SKIP_GATE_CLONING -skip_gate_cloning 0
+    append_env_var additional_args SKIP_BUFFER_REMOVAL -skip_buffer_removal 0
+    puts "repair_timing [join $additional_args " "]"
+    repair_timing {*}$additional_args
 
-    if { $::env(DETAILED_METRICS) } {
+    if {[info exist ::env(DETAILED_METRICS)]} {
       report_metrics 5 "global route post repair timing"
     }
 
     # Running DPL to fix overlapped instances
     # Run to get modified net by DPL
-    log_cmd global_route -start_incremental
-    log_cmd detailed_placement {*}$dpl_args
-    check_placement -verbose
+    global_route -start_incremental
+    detailed_placement
     # Route only the modified net by DPL
-    log_cmd global_route -end_incremental {*}$res_aware \
-      -congestion_report_file $::env(REPORTS_DIR)/congestion_post_repair_timing.rpt
+    global_route -end_incremental -congestion_report_file $::env(REPORTS_DIR)/congestion_post_repair_timing.rpt
   }
 
+  if { [info exists ::env(RECOVER_POWER)] } {
+    puts "Downsizing/switching to higher Vt  for non critical gates for power recovery"
+    puts "Percent of paths optimized $::env(RECOVER_POWER)"
+    report_tns
+    report_wns
+    report_power
+    repair_timing -recover_power $::env(RECOVER_POWER)
+    report_tns
+    report_wns
+    report_power
+  }
 
-  log_cmd global_route -start_incremental
-  recover_power_helper
-  # Route the modified nets by rsz journal restore
-  log_cmd global_route -end_incremental {*}$res_aware \
-    -congestion_report_file $::env(REPORTS_DIR)/congestion_post_recover_power.rpt
-
-  if {
-    !$::env(SKIP_ANTENNA_REPAIR) &&
-    [env_var_exists_and_non_empty MAX_REPAIR_ANTENNAS_ITER_GRT]
-  } {
+  if {![info exist ::env(SKIP_ANTENNA_REPAIR)]} {
     puts "Repair antennas..."
-    repair_antennas -iterations $::env(MAX_REPAIR_ANTENNAS_ITER_GRT)
-    # repair antennas calls DPL internally
+    repair_antennas -iterations 5
     check_placement -verbose
     check_antennas -report_file $::env(REPORTS_DIR)/grt_antennas.log
   }
 
   puts "Estimate parasitics..."
-  log_cmd estimate_parasitics -global_routing
+  estimate_parasitics -global_routing
 
   report_metrics 5 "global route"
 
@@ -117,9 +132,7 @@ proc global_route_helper { } {
   source [file join $::env(SCRIPTS_DIR) "write_ref_sdc.tcl"]
 
   write_guides $::env(RESULTS_DIR)/route.guide
-  source_step_tcl POST GLOBAL_ROUTE
-  orfs_write_db $::env(RESULTS_DIR)/5_1_grt.odb
-  orfs_write_sdc $::env(RESULTS_DIR)/5_1_grt.sdc
+  write_db $::env(RESULTS_DIR)/5_1_grt.odb
 }
 
 global_route_helper
