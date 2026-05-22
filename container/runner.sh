@@ -50,6 +50,7 @@ VERBOSE_READS=${VERBOSE_READS:-0}
 OPROAD_DOCKER_TTY=${OPROAD_DOCKER_TTY:-auto}
 OPROAD_FINISH_MODE=${OPROAD_FINISH_MODE:-auto}
 OPROAD_RUNNER=${OPROAD_RUNNER:-auto}
+OPROAD_REUSE_OUTPUTS=${OPROAD_REUSE_OUTPUTS:-1}
 
 usage() {
     echo ""
@@ -65,6 +66,9 @@ usage() {
     echo "Note:"
     echo "  Only 'oproad new' takes a platform/process argument."
     echo "  Other commands read PLATFORM and DESIGN from project_dir/.asic_project."
+    echo ""
+    echo "Environment:"
+    echo "  OPROAD_REUSE_OUTPUTS  reuse project results/logs/reports/objects before make, default: 1"
     echo ""
     exit 1
 }
@@ -293,10 +297,46 @@ sync_orfs_to_project() {
     fi
 }
 
+reuse_outputs_enabled() {
+    case "$OPROAD_REUSE_OUTPUTS" in
+        0|false|FALSE|no|NO|off|OFF)
+            return 1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+sync_project_outputs_to_orfs() {
+    reuse_outputs_enabled || return 0
+
+    local any=0
+
+    for dir in results reports logs objects; do
+        if [ -d "$PROJECT_ROOT/${dir}/${PLATFORM}/${DESIGN}" ]; then
+            any=1
+            mkdir -p "$ORFS_ROOT/${dir}/${PLATFORM}/${DESIGN}"
+            rsync -a --delete \
+                "$PROJECT_ROOT/${dir}/${PLATFORM}/${DESIGN}/" \
+                "$ORFS_ROOT/${dir}/${PLATFORM}/${DESIGN}/" || {
+                    echo "ERROR: rsync cached ${dir} failed" >&2
+                    return 1
+                }
+            echo "  reused cached ${dir}/${PLATFORM}/${DESIGN}"
+        fi
+    done
+
+    if [ "$any" -eq 1 ]; then
+        echo "  existing project outputs are available to make dependency checks"
+    fi
+}
+
 run_docker_make() {
     TARGETS=("$@")
 
     sync_project_to_orfs
+    sync_project_outputs_to_orfs || return 1
     cd "$ORFS_ROOT" || exit 1
 
     RUNNER_MODE=$(oproad_runner_mode)
@@ -458,6 +498,23 @@ find_platform_area_libs() {
     } | awk '!seen[$0]++'
 }
 
+find_run_area_libs() {
+    local run_design="${1:-${DESIGN:-}}"
+    local object_lib_dir=""
+
+    if [ -n "${PROJECT_ROOT:-}" ] && [ -n "${PLATFORM:-}" ] && [ -n "$run_design" ]; then
+        object_lib_dir="$PROJECT_ROOT/objects/${PLATFORM}/${run_design}/${BASE}/lib"
+    fi
+
+    {
+        if [ -n "$object_lib_dir" ] && [ -d "$object_lib_dir" ]; then
+            find "$object_lib_dir" -type f -iname "*.lib" 2>/dev/null | \
+                grep -Evi 'FAKE|fake' | sort
+        fi
+        find_platform_area_libs
+    } | awk '!seen[$0]++'
+}
+
 find_platform_sta_libs() {
     local platform_dir="$ORFS_ROOT/platforms/${PLATFORM}"
 
@@ -559,7 +616,7 @@ find_nand2_cell_any() {
             echo "$lib|$cell"
             return 0
         fi
-    done < <(find_platform_area_libs)
+    done < <(find_run_area_libs)
 }
 
 ###############################################################################
@@ -754,6 +811,145 @@ summarize_unconstrained_endpoints() {
     fi
 
     rm -f "$tmp"
+}
+
+unconstrained_endpoint_pins() {
+    local rpt="$1"
+
+    awk '
+        /unconstrained endpoints/ {
+            capture = 1
+            next
+        }
+        capture && /^[[:space:]]+[^[:space:]]+\/[^[:space:]]+[[:space:]]*$/ {
+            line = $0
+            sub(/^[[:space:]]+/, "", line)
+            sub(/[[:space:]]+$/, "", line)
+            print line
+        }
+        capture && NF == 0 {
+            capture = 0
+        }
+    ' "$rpt" 2>/dev/null
+}
+
+netlist_instance_pin_net() {
+    local netlist="$1"
+    local inst_name="$2"
+    local pin_name="$3"
+
+    awk -v want_inst="$inst_name" -v want_pin="$pin_name" '
+        function trim(s) {
+            sub(/^[[:space:]]+/, "", s)
+            sub(/[[:space:]]+$/, "", s)
+            return s
+        }
+
+        function norm_inst(s) {
+            s = trim(s)
+            sub(/^\\/, "", s)
+            return s
+        }
+
+        {
+            line = $0
+            sub(/\/\/.*/, "", line)
+
+            if (!in_inst && line ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_$]*[[:space:]]+/) {
+                rest = line
+                sub(/^[[:space:]]*[A-Za-z_][A-Za-z0-9_$]*[[:space:]]+/, "", rest)
+                sub(/[[:space:]]*\(.*/, "", rest)
+
+                if (norm_inst(rest) == want_inst) {
+                    in_inst = 1
+                }
+            }
+
+            if (in_inst) {
+                pin_re = "\\." want_pin "[[:space:]]*\\("
+                if (line ~ pin_re) {
+                    conn = line
+                    sub("^.*\\." want_pin "[[:space:]]*\\(", "", conn)
+                    sub("\\).*", "", conn)
+                    conn = trim(conn)
+                    sub(/^\\/, "", conn)
+                    print conn
+                    exit
+                }
+
+                if (line ~ /^[[:space:]]*\);/) {
+                    in_inst = 0
+                }
+            }
+        }
+    ' "$netlist" 2>/dev/null
+}
+
+netlist_net_is_tie_driven() {
+    local netlist="$1"
+    local net_name="$2"
+
+    if echo "$net_name" | grep -Eq "^[01]$|^[0-9]*'[bhdBHD][0-9a-fA-FxXzZ]+$"; then
+        return 0
+    fi
+
+    awk -v want_net="$net_name" '
+        function trim(s) {
+            sub(/^[[:space:]]+/, "", s)
+            sub(/[[:space:]]+$/, "", s)
+            return s
+        }
+
+        function norm_net(s) {
+            s = trim(s)
+            sub(/^\\/, "", s)
+            return s
+        }
+
+        /^[[:space:]]*TIE[A-Za-z0-9_$]*[[:space:]]+/ {
+            in_tie = 1
+        }
+
+        in_tie && /\.[A-Za-z0-9_]+[[:space:]]*\(/ {
+            conn = $0
+            sub(/^.*\(/, "", conn)
+            sub(/\).*$/, "", conn)
+
+            if (norm_net(conn) == want_net) {
+                found = 1
+                exit
+            }
+        }
+
+        in_tie && /^[[:space:]]*\);/ {
+            in_tie = 0
+        }
+
+        END {
+            exit(found ? 0 : 1)
+        }
+    ' "$netlist" 2>/dev/null
+}
+
+count_constant_driven_unconstrained_endpoints() {
+    local netlist="$1"
+    local rpt="$2"
+    local count=0
+    local pin inst port net
+
+    while IFS= read -r pin; do
+        [ -n "$pin" ] || continue
+
+        inst="${pin%/*}"
+        port="${pin##*/}"
+        net=$(netlist_instance_pin_net "$netlist" "$inst" "$port")
+
+        if [ -n "$net" ] && netlist_net_is_tie_driven "$netlist" "$net"; then
+            count=$((count + 1))
+        fi
+    done < <(unconstrained_endpoint_pins "$rpt")
+
+    echo "$count"
 }
 
 print_health_line() {
@@ -1067,7 +1263,14 @@ puts ""
 puts "========================================"
 puts " SETUP CHECK"
 puts "========================================"
-check_setup
+check_setup -verbose -no_input_delay -no_output_delay -multiple_clock -no_clock -loops -generated_clocks
+
+puts ""
+puts "========================================"
+puts " UNCONSTRAINED ENDPOINT CHECK"
+puts "========================================"
+puts "OPROAD_UNCONSTRAINED_ENDPOINT_REPORT=${sta_project_path}/reports/${PLATFORM}/${run_design}/${BASE}/synth_unconstrained_endpoints.rpt"
+check_setup -verbose -unconstrained_endpoints > ${sta_project_path}/reports/${PLATFORM}/${run_design}/${BASE}/synth_unconstrained_endpoints.rpt
 
 puts ""
 puts "========================================"
@@ -1075,6 +1278,7 @@ puts " SYNTHESIS STA SUMMARY"
 puts "========================================"
 report_wns
 report_tns
+report_design_area
 
 puts ""
 puts "========================================"
@@ -1131,23 +1335,112 @@ EOF
 ###############################################################################
 
 logic_cells() {
+    local netlist="$1"
+    local top_name="${2:-${OPROAD_AREA_TOP:-}}"
+
     awk '
-        /^[[:space:]]*[A-Za-z_][A-Za-z0-9_$]*[[:space:]]+[A-Za-z_\\][A-Za-z0-9_$\\]*[[:space:]]*\(/ {
-            cell = $1
+        function skip_cell_type(cell, lower, upper) {
+            upper = toupper(cell)
+            lower = tolower(cell)
 
-            if (cell ~ /^(module|endmodule|assign|always|initial|input|output|inout|wire|reg)$/)
-                next
+            if (cell ~ /^(module|endmodule|assign|always|initial|input|output|inout|wire|reg|tri|supply0|supply1|parameter|localparam)$/)
+                return 1
+            if (upper ~ /^(FILLCELL|FILL|TAPCELL|TAP|DECAP|WELLTAP|ANTENNA|ENDCAP)/)
+                return 1
+            if (lower ~ /(^|__)fill(cap)?($|[_0-9])|(^|__)decap($|[_0-9])|(^|__)tap(cell)?($|[_0-9])|(^|__)endcap($|[_0-9])|antenna/)
+                return 1
 
-            if (cell ~ /^(FILLCELL|FILL|TAPCELL|TAP|DECAP|WELLTAP|ANTENNA)/)
-                next
-
-            print cell
+            return 0
         }
-    ' "$1" 2>/dev/null
+
+        function parse_instance_cell(raw, line, cell, rest) {
+            line = raw
+            sub(/\/\/.*/, "", line)
+
+            if (line !~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_$]*[[:space:]]+/)
+                return ""
+
+            cell = line
+            sub(/^[[:space:]]*/, "", cell)
+            sub(/[[:space:]].*$/, "", cell)
+
+            if (skip_cell_type(cell))
+                return ""
+
+            rest = line
+            sub(/^[[:space:]]*[A-Za-z_][A-Za-z0-9_$]*[[:space:]]+/, "", rest)
+
+            # Yosys/OpenROAD netlists often use escaped instance names such as
+            # \state[3]$_DFF_PN0_ . Match the whole escaped token up to the
+            # terminating whitespace before "(", instead of assuming only
+            # identifier characters.
+            if (rest !~ /^(\\[^[:space:]]+|[A-Za-z_][^[:space:]]*)[[:space:]]*\(/)
+                return ""
+
+            return cell
+        }
+
+        function add_instance(mod, cell) {
+            inst_count[mod]++
+            inst_type[mod SUBSEP inst_count[mod]] = cell
+        }
+
+        function emit_leaf_cells(mod, i, cell) {
+            if (!(mod in modules))
+                return
+            if (visiting[mod])
+                return
+
+            visiting[mod] = 1
+            for (i = 1; i <= inst_count[mod]; i++) {
+                cell = inst_type[mod SUBSEP i]
+                if (cell in modules) {
+                    emit_leaf_cells(cell)
+                } else {
+                    print cell
+                }
+            }
+            visiting[mod] = 0
+        }
+
+        /^[[:space:]]*module[[:space:]]+/ {
+            current_module = $0
+            sub(/^[[:space:]]*module[[:space:]]+/, "", current_module)
+            sub(/[[:space:]#(;].*$/, "", current_module)
+            gsub(/\\$/, "", current_module)
+
+            modules[current_module] = 1
+            if (first_module == "")
+                first_module = current_module
+            next
+        }
+
+        /^[[:space:]]*endmodule([[:space:]]|$)/ {
+            current_module = ""
+            next
+        }
+
+        {
+            if (current_module == "")
+                next
+
+            cell = parse_instance_cell($0)
+            if (cell != "")
+                add_instance(current_module, cell)
+        }
+
+        END {
+            top = requested_top
+            if (top == "" || !(top in modules))
+                top = first_module
+
+            emit_leaf_cells(top)
+        }
+    ' requested_top="$top_name" "$netlist" 2>/dev/null
 }
 
 core_logic_cells() {
-    logic_cells "$1" | grep -vi '^BUF' | grep -vi '^CLKBUF' | grep -vi '^INV'
+    logic_cells "$1" "${2:-${OPROAD_AREA_TOP:-}}" | grep -vi '^BUF' | grep -vi '^CLKBUF' | grep -vi '^INV'
 }
 
 lib_cell_area() {
@@ -1155,12 +1448,23 @@ lib_cell_area() {
     local cell_name="$2"
 
     awk -v cell="$cell_name" '
+        function brace_delta(s, tmp, opens, closes) {
+            tmp = s
+            opens = gsub(/\{/, "{", tmp)
+            tmp = s
+            closes = gsub(/\}/, "}", tmp)
+            return opens - closes
+        }
+
         /^[[:space:]]*cell[[:space:]]*\(/ {
             line = $0
             sub(/^.*cell[[:space:]]*\(/, "", line)
             sub(/\).*$/, "", line)
+            gsub(/"/, "", line)
             current_cell = line
             in_cell = (current_cell == cell)
+            depth = in_cell ? brace_delta($0) : 0
+            next
         }
 
         in_cell && /^[[:space:]]*area[[:space:]]*:/ {
@@ -1171,8 +1475,11 @@ lib_cell_area() {
             exit
         }
 
-        in_cell && /^[[:space:]]*}/ {
-            in_cell = 0
+        in_cell {
+            depth += brace_delta($0)
+            if (depth <= 0) {
+                in_cell = 0
+            }
         }
     ' "$lib_file"
 }
@@ -1187,19 +1494,156 @@ lib_cell_area_any() {
             echo "$area"
             return 0
         fi
-    done < <(find_platform_area_libs)
+    done < <(find_run_area_libs)
 }
 
 sum_netlist_cell_area() {
     local netlist="$1"
+    local top_name="${2:-${OPROAD_AREA_TOP:-}}"
 
-    logic_cells "$netlist" | sort | uniq -c | \
+    logic_cells "$netlist" "$top_name" | sort | uniq -c | \
     while read COUNT CELL; do
         CELL_AREA=$(lib_cell_area_any "$CELL")
         if [ -n "$CELL_AREA" ]; then
             awk "BEGIN {printf \"%.6f\n\", ${COUNT} * ${CELL_AREA}}"
         fi
     done | awk '{sum += $1} END {printf "%.6f", sum}'
+}
+
+extract_yosys_chip_area() {
+    local stat_file="$1"
+
+    awk '
+        /Chip area for (top )?module/ {
+            val = $NF
+            gsub(/[^0-9.].*$/, "", val)
+        }
+        END {
+            if (val != "") print val
+        }
+    ' "$stat_file" 2>/dev/null
+}
+
+extract_openroad_design_area() {
+    local f
+
+    for f in "$@"; do
+        [ -f "$f" ] || continue
+        awk '
+            /"[^"]*design__instance__area"[[:space:]]*:/ {
+                line = $0
+                sub(/^.*:[[:space:]]*/, "", line)
+                sub(/,.*/, "", line)
+                gsub(/[[:space:]]/, "", line)
+                val = line
+            }
+            /Design area[[:space:]]+[0-9.]+/ {
+                for (i = 1; i <= NF; i++) {
+                    if ($i ~ /^[0-9]+(\.[0-9]+)?$/) {
+                        val = $i
+                        break
+                    }
+                }
+            }
+            END {
+                if (val != "") print val
+            }
+        ' "$f" 2>/dev/null
+    done | tail -1
+}
+
+extract_openroad_utilization() {
+    local f
+
+    for f in "$@"; do
+        [ -f "$f" ] || continue
+        awk '
+            /"[^"]*design__instance__utilization"[[:space:]]*:/ {
+                line = $0
+                sub(/^.*:[[:space:]]*/, "", line)
+                sub(/,.*/, "", line)
+                gsub(/[[:space:]]/, "", line)
+                val = line
+            }
+            /Design area[[:space:]]+[0-9.]+.*utilization/ {
+                for (i = 1; i <= NF; i++) {
+                    if ($i ~ /^[0-9]+%$/) {
+                        pct = $i
+                        sub(/%$/, "", pct)
+                        val = pct / 100.0
+                        break
+                    }
+                }
+            }
+            END {
+                if (val != "") print val
+            }
+        ' "$f" 2>/dev/null
+    done | tail -1
+}
+
+show_area_health_check() {
+    local area="$1"
+    local coverage="$2"
+    local unmatched="$3"
+    local native_area="$4"
+    local native_source="$5"
+
+    local fail=0
+    local warn=0
+
+    echo ""
+    echo "========== AREA HEALTH CHECK =========="
+
+    if [ -n "$area" ] && awk "BEGIN {exit !(${area} > 0)}"; then
+        print_health_line "PASS" "summed netlist area" "${area} μm²"
+    else
+        print_health_line "FAIL" "summed netlist area" "missing or zero"
+        fail=$((fail + 1))
+    fi
+
+    if [ -n "$coverage" ] && awk "BEGIN {exit !(${coverage} >= 99.5)}"; then
+        print_health_line "PASS" "Liberty area coverage" "${coverage}% matched"
+    else
+        print_health_line "WARN" "Liberty area coverage" "${coverage:-0.00}% matched; unmatched=${unmatched:-0}"
+        warn=$((warn + 1))
+    fi
+
+    if [ "${unmatched:-0}" = "0" ]; then
+        print_health_line "PASS" "unmatched cells" "none"
+    else
+        print_health_line "WARN" "unmatched cells" "${unmatched} instance(s)"
+        warn=$((warn + 1))
+    fi
+
+    if [ -n "$native_area" ] && [ -n "$area" ] && \
+        awk "BEGIN {exit !(${native_area} > 0 && ${area} > 0)}"; then
+        local delta_pct
+        delta_pct=$(awk "BEGIN {d=100.0*(${area}-${native_area})/${native_area}; if (d < 0) d=-d; printf \"%.3f\", d}")
+
+        if awk "BEGIN {exit !(${delta_pct} <= 0.5)}"; then
+            print_health_line "PASS" "native area cross-check" "${native_area} μm² from ${native_source}; delta=${delta_pct}%"
+        else
+            print_health_line "WARN" "native area cross-check" "${native_area} μm² from ${native_source}; delta=${delta_pct}%"
+            print_health_line "INFO" "authoritative area" "keeping summed Liberty area, not native cross-check"
+            warn=$((warn + 1))
+        fi
+    else
+        print_health_line "WARN" "native area cross-check" "native tool area not found"
+        warn=$((warn + 1))
+    fi
+
+    echo ""
+    if [ "$fail" -gt 0 ]; then
+        echo "Area health result: FAIL (${fail} fail, ${warn} warn)"
+        echo "Meaning           : Do not use area until FAIL items are fixed."
+    elif [ "$warn" -gt 0 ]; then
+        echo "Area health result: WARN (${warn} warn)"
+        echo "Meaning           : Design area remains Liberty-based; review coverage/cross-check warnings."
+    else
+        echo "Area health result: PASS"
+        echo "Meaning           : Area is consistent with Liberty and native tool reports."
+    fi
 }
 
 # Write an area coverage report to a small key-value file.
@@ -1210,10 +1654,17 @@ sum_netlist_cell_area() {
 #   UNMATCHED_INST
 #   COVERAGE
 #   UNMATCHED_FILE
+#   AUTHORITY
 write_area_coverage_report() {
     local netlist="$1"
     local out_file="$2"
+    local top_name="${3:-${OPROAD_AREA_TOP:-}}"
     local unmatched_file="${out_file}.unmatched"
+    local authority="summed Liberty cell areas"
+
+    if [ "${PLATFORM:-}" = "nangate15" ]; then
+        authority="summed Nangate15 Liberty cell areas"
+    fi
 
     : > "$unmatched_file"
 
@@ -1222,7 +1673,7 @@ write_area_coverage_report() {
     local unmatched_inst=0
     local area_sum="0.000000"
 
-    logic_cells "$netlist" | sort | uniq -c | \
+    logic_cells "$netlist" "$top_name" | sort | uniq -c | \
     while read COUNT CELL; do
         CELL_AREA=$(lib_cell_area_any "$CELL")
 
@@ -1256,6 +1707,7 @@ write_area_coverage_report() {
 
         echo "COVERAGE=${COVERAGE}" >> "$out_file"
         echo "UNMATCHED_FILE=${unmatched_file}" >> "$out_file"
+        echo "AUTHORITY=${authority}" >> "$out_file"
     done
 
     # If there were no cells at all, make sure the report still exists.
@@ -1266,6 +1718,7 @@ write_area_coverage_report() {
         echo "UNMATCHED_INST=0" >> "$out_file"
         echo "COVERAGE=0.00" >> "$out_file"
         echo "UNMATCHED_FILE=${unmatched_file}" >> "$out_file"
+        echo "AUTHORITY=${authority}" >> "$out_file"
     fi
 }
 
@@ -1747,11 +2200,13 @@ if [ "$CMD" = "report" ]; then
         NETLIST="${RESULT_DIR}/6_final.v"
         REPORT_LOG="${LOG_DIR}/6_report.log"
         STAT_RPT="${REPORT_DIR}/6_finish.rpt"
+        UNCONSTRAINED_RPT=""
     elif [ -f "${RESULT_DIR}/1_synth.v" ]; then
         REPORT_STAGE="SYNTHESIS"
         NETLIST="${RESULT_DIR}/1_synth.v"
         REPORT_LOG="${LOG_DIR}/1_1_yosys.log"
         STAT_RPT="${REPORT_DIR}/synth_stat.txt"
+        UNCONSTRAINED_RPT="${REPORT_DIR}/synth_unconstrained_endpoints.rpt"
 
         if ! run_synthesis_sta "$ACTIVE_DESIGN"; then
             echo ""
@@ -1804,6 +2259,23 @@ if [ "$CMD" = "report" ]; then
         NO_PATHS=$(grep -i "No paths found" "$TIMING_RPT" 2>/dev/null | tail -1)
         UNCLOCKED=$(grep -i "unclocked register/latch pins" "$TIMING_RPT" 2>/dev/null | tail -1)
         UNCONSTRAINED=$(grep -i "unconstrained endpoints" "$TIMING_RPT" 2>/dev/null | tail -1)
+        CONSTANT_UNCONSTRAINED_NOTE=""
+
+        if [ "$REPORT_STAGE" = "SYNTHESIS" ] && [ -n "$UNCONSTRAINED_RPT" ] && [ -f "$UNCONSTRAINED_RPT" ]; then
+            RAW_UNCONSTRAINED=$(grep -i "unconstrained endpoints" "$UNCONSTRAINED_RPT" 2>/dev/null | tail -1)
+            RAW_UNCONSTRAINED_COUNT=$(extract_unconstrained_count "$UNCONSTRAINED_RPT")
+
+            if [ -n "$RAW_UNCONSTRAINED" ] && [ -n "$RAW_UNCONSTRAINED_COUNT" ] && [ "$RAW_UNCONSTRAINED_COUNT" != "0" ]; then
+                CONST_UNCONSTRAINED_COUNT=$(count_constant_driven_unconstrained_endpoints "$NETLIST" "$UNCONSTRAINED_RPT")
+
+                if [ "$CONST_UNCONSTRAINED_COUNT" = "$RAW_UNCONSTRAINED_COUNT" ]; then
+                    UNCONSTRAINED=""
+                    CONSTANT_UNCONSTRAINED_NOTE="${RAW_UNCONSTRAINED_COUNT} constant-driven endpoint(s) excluded from STA health"
+                else
+                    UNCONSTRAINED="$RAW_UNCONSTRAINED"
+                fi
+            fi
+        fi
 
         if [ -z "$WS" ] && [ -z "$NO_PATHS" ] && [ -n "$WNS" ]; then
             WS="$WNS"
@@ -1822,6 +2294,7 @@ if [ "$CMD" = "report" ]; then
         NO_PATHS=""
         UNCLOCKED=""
         UNCONSTRAINED=""
+        CONSTANT_UNCONSTRAINED_NOTE=""
     fi
 
     echo "TNS summary        : ${TNS:-N/A} ${TIME_UNIT}"
@@ -1846,8 +2319,21 @@ if [ "$CMD" = "report" ]; then
             summarize_unconstrained_endpoints "$TIMING_RPT" 20
         fi
 
+        if [ -n "$CONSTANT_UNCONSTRAINED_NOTE" ]; then
+            echo "Setup note  : $CONSTANT_UNCONSTRAINED_NOTE"
+            echo "Note        : These endpoints are driven only by tie/constant nets."
+        fi
+
         if { [ -z "$TNS" ] && [ -z "$WNS" ] && [ -z "$WS" ]; } || [ -n "$NO_PATHS" ]; then
             show_sta_diagnostics "$TIMING_RPT"
+        fi
+    fi
+
+    if [ "$REPORT_STAGE" = "POST-ROUTE" ]; then
+        if [ -f "${RESULT_DIR}/6_final.spef" ]; then
+            echo "Parasitics         : SPEF found (${RESULT_DIR#$PROJECT_ROOT/}/6_final.spef)"
+        else
+            echo "Warning            : final SPEF not found; post-route timing may not include extracted RC parasitics."
         fi
     fi
 
@@ -1866,6 +2352,9 @@ if [ "$CMD" = "report" ]; then
     if [ -n "$UNCONSTRAINED" ]; then
         echo "Unconstrained note: $UNCONSTRAINED"
         echo "Action            : Review the likely endpoint list above."
+    elif [ -n "$CONSTANT_UNCONSTRAINED_NOTE" ]; then
+        echo "Unconstrained note: none after ignoring constant-driven endpoint(s)"
+        echo "Constant endpoints: $CONSTANT_UNCONSTRAINED_NOTE"
     else
         echo "Unconstrained note: none reported by check_setup"
     fi
@@ -1963,11 +2452,19 @@ if [ "$CMD" = "report" ]; then
     AREA_UNMATCHED_INST="0"
     AREA_COVERAGE="0.00"
     AREA_UNMATCHED_FILE=""
+    NATIVE_AREA=""
+    NATIVE_AREA_SOURCE="N/A"
+    if [ "$PLATFORM" = "nangate15" ]; then
+        AREA_AUTHORITY="summed Nangate15 Liberty cell areas"
+    else
+        AREA_AUTHORITY="summed Liberty cell areas"
+    fi
+    AREA_TOP="$(get_design_name_for_dir "$ACTIVE_DESIGN")"
 
     AREA_REPORT="${REPORT_DIR}/area_coverage.txt"
 
     if [ -f "$NETLIST" ]; then
-        write_area_coverage_report "$NETLIST" "$AREA_REPORT"
+        write_area_coverage_report "$NETLIST" "$AREA_REPORT" "$AREA_TOP"
 
         AREA=$(grep "^AREA=" "$AREA_REPORT" 2>/dev/null | tail -1 | cut -d= -f2)
         AREA_TOTAL_INST=$(grep "^TOTAL_INST=" "$AREA_REPORT" 2>/dev/null | tail -1 | cut -d= -f2)
@@ -1976,16 +2473,47 @@ if [ "$CMD" = "report" ]; then
         AREA_COVERAGE=$(grep "^COVERAGE=" "$AREA_REPORT" 2>/dev/null | tail -1 | cut -d= -f2)
         AREA_UNMATCHED_FILE=$(grep "^UNMATCHED_FILE=" "$AREA_REPORT" 2>/dev/null | tail -1 | cut -d= -f2)
 
-        AREA_SOURCE="summed from netlist cell areas using multi-Liberty lookup"
+        AREA_SOURCE="top-expanded netlist cell areas using multi-Liberty lookup"
+    fi
+
+    if [ "$REPORT_STAGE" = "SYNTHESIS" ]; then
+        NATIVE_AREA=$(extract_yosys_chip_area "$STAT_RPT")
+        if [ -n "$NATIVE_AREA" ]; then
+            NATIVE_AREA_SOURCE="Yosys synth_stat.txt"
+        fi
+    else
+        NATIVE_AREA=$(extract_openroad_design_area \
+            "${LOG_DIR}/6_report.json" \
+            "${LOG_DIR}/6_report.log" \
+            "${REPORT_DIR}/6_finish.rpt" \
+            "${LOG_DIR}/5_3_route.json" \
+            "${LOG_DIR}/3_5_place_dp.json" \
+            "${LOG_DIR}/2_1_floorplan.json" \
+            "${LOG_DIR}/2_1_floorplan.log")
+        if [ -n "$NATIVE_AREA" ]; then
+            NATIVE_AREA_SOURCE="OpenROAD metrics/report"
+        fi
     fi
 
     if [ "$REPORT_STAGE" = "POST-ROUTE" ]; then
-        AREA_LINE=$(grep "Design area" "$REPORT_LOG" "$TIMING_RPT" 2>/dev/null | tail -1)
-        UTIL=$(echo "$AREA_LINE" | grep -oE '[0-9]+% utilization')
+        UTIL_FRACTION=$(extract_openroad_utilization \
+            "${LOG_DIR}/6_report.json" \
+            "${LOG_DIR}/6_report.log" \
+            "${REPORT_DIR}/6_finish.rpt" \
+            "${LOG_DIR}/5_3_route.json" \
+            "${LOG_DIR}/3_5_place_dp.json" \
+            "${LOG_DIR}/2_1_floorplan.json" \
+            "${LOG_DIR}/2_1_floorplan.log")
+        if [ -n "$UTIL_FRACTION" ]; then
+            UTIL=$(awk "BEGIN {printf \"%.2f%% utilization\", ${UTIL_FRACTION} * 100.0}")
+        fi
     fi
 
     echo "Design area         : ${AREA:-N/A} μm²"
     echo "Area source         : ${AREA_SOURCE}"
+    echo "Area authority      : ${AREA_AUTHORITY}"
+    echo "Native tool area    : ${NATIVE_AREA:-N/A} μm²"
+    echo "Native area source  : ${NATIVE_AREA_SOURCE}"
     echo "Area-matched cells  : ${AREA_MATCHED_INST:-0}"
     echo "Area-unmatched cells: ${AREA_UNMATCHED_INST:-0}"
     echo "Area coverage       : ${AREA_COVERAGE:-0.00}%"
@@ -2014,16 +2542,19 @@ if [ "$CMD" = "report" ]; then
         done
     fi
 
+    show_area_health_check "${AREA:-}" "${AREA_COVERAGE:-0.00}" "${AREA_UNMATCHED_INST:-0}" "${NATIVE_AREA:-}" "$NATIVE_AREA_SOURCE"
+
     echo ""
     echo "========== SEQUENTIAL / LOGIC CELLS =========="
 
-    DFF_COUNT=$(logic_cells "$NETLIST" | grep -Ei 'DFF|SDFF|DFX|LATCH|LAT' | wc -l | tr -d ' ')
-    STD_CELL_COUNT=$(logic_cells "$NETLIST" | wc -l | tr -d ' ')
-    CORE_LOGIC_COUNT=$(core_logic_cells "$NETLIST" | wc -l | tr -d ' ')
+    DFF_COUNT=$(logic_cells "$NETLIST" "$AREA_TOP" | grep -Ei 'DFF|SDFF|DFX|LATCH|LAT' | wc -l | tr -d ' ')
+    STD_CELL_COUNT=$(logic_cells "$NETLIST" "$AREA_TOP" | wc -l | tr -d ' ')
+    CORE_LOGIC_COUNT=$(core_logic_cells "$NETLIST" "$AREA_TOP" | wc -l | tr -d ' ')
 
     echo "DFF-like cells             : ${DFF_COUNT}"
     echo "Standard cells             : ${STD_CELL_COUNT}"
     echo "Core logic cells no BUF/INV: ${CORE_LOGIC_COUNT}"
+    echo "Cell count mode            : hierarchical expansion from top ${AREA_TOP}"
     echo "Note: DFF-like cell count is register count, not exact pipeline depth."
 
     echo ""
@@ -2092,7 +2623,7 @@ if [ "$CMD" = "report" ]; then
     echo ""
     echo "========== TOP 10 STANDARD CELLS WITH AREA =========="
 
-    logic_cells "$NETLIST" | sort | uniq -c | sort -nr | head -10 | \
+    logic_cells "$NETLIST" "$AREA_TOP" | sort | uniq -c | sort -nr | head -10 | \
     while read COUNT CELL; do
         CELL_AREA=$(lib_cell_area_any "$CELL")
 

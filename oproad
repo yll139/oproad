@@ -43,6 +43,7 @@ Environment:
   OPROAD_ORFS_BASE_IMAGE  ORFS base image, default: openroad/orfs:latest
   OPROAD_DOCKER_PLATFORM  Docker platform, default: auto
   OPROAD_FINISH_MODE      auto, light, full, or skip
+  OPROAD_REUSE_OUTPUTS    Reuse existing project outputs before make, default: 1
 
 Examples:
   oproad build-image latest auto
@@ -126,7 +127,10 @@ detect_docker_platform() {
     fi
 
     local arch
-    arch="$(docker version --format '{{.Server.Arch}}' 2>/dev/null || uname -m)"
+    arch="$(docker version --format '{{.Server.Arch}}' 2>/dev/null | awk 'NF { value=$0 } END { print value }')"
+    if [ -z "$arch" ]; then
+        arch="$(uname -m)"
+    fi
     case "$arch" in
         amd64|x86_64)
             printf '%s\n' "linux/amd64"
@@ -158,6 +162,7 @@ docker_common_env=(
     -e "OPROAD_RUNNER=local"
     -e "OPROAD_DOCKER_TTY=0"
     -e "OPROAD_FINISH_MODE=${OPROAD_FINISH_MODE:-auto}"
+    -e "OPROAD_REUSE_OUTPUTS=${OPROAD_REUSE_OUTPUTS:-1}"
 )
 
 run_container() {
@@ -172,6 +177,9 @@ run_container() {
     resolved_platform="$(detect_docker_platform "$PLATFORM_SETTING")"
     docker run --rm $tty --platform "$resolved_platform" \
         "${docker_common_env[@]}" \
+        -v "${REPO_ROOT}/container/runner.sh:/usr/local/bin/oproad-runner:ro" \
+        -v "${REPO_ROOT}/flow/scripts:/OpenROAD-flow-scripts/flow/scripts:ro" \
+        -v "${REPO_ROOT}/flow/Makefile:/OpenROAD-flow-scripts/flow/Makefile:ro" \
         -v "${mount_host}:${mount_container}" \
         "$IMAGE" "$@"
 }

@@ -5,6 +5,7 @@ export ORFS_ROOT="${ORFS_ROOT:-/OpenROAD-flow-scripts/flow}"
 export OPROAD_RUNNER="${OPROAD_RUNNER:-local}"
 export OPROAD_DOCKER_TTY="${OPROAD_DOCKER_TTY:-0}"
 export OPROAD_FINISH_MODE="${OPROAD_FINISH_MODE:-auto}"
+export OPROAD_REUSE_OUTPUTS="${OPROAD_REUSE_OUTPUTS:-1}"
 export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-root}"
 

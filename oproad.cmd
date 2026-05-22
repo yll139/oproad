@@ -36,6 +36,12 @@ if defined OPROAD_FINISH_MODE (
     set "FINISH_MODE=auto"
 )
 
+if defined OPROAD_REUSE_OUTPUTS (
+    set "REUSE_OUTPUTS=%OPROAD_REUSE_OUTPUTS%"
+) else (
+    set "REUSE_OUTPUTS=1"
+)
+
 set "CMD=%~1"
 if "%CMD%"=="" goto :usage_ok
 if "%CMD%"=="-h" goto :usage_ok
@@ -74,6 +80,10 @@ if "%CMD%"=="new" (
         -e "OPROAD_RUNNER=local" ^
         -e "OPROAD_DOCKER_TTY=0" ^
         -e "OPROAD_FINISH_MODE=%FINISH_MODE%" ^
+        -e "OPROAD_REUSE_OUTPUTS=%REUSE_OUTPUTS%" ^
+        -v "%REPO_ROOT%\container\runner.sh:/usr/local/bin/oproad-runner:ro" ^
+        -v "%REPO_ROOT%\flow\scripts:/OpenROAD-flow-scripts/flow/scripts:ro" ^
+        -v "%REPO_ROOT%\flow\Makefile:/OpenROAD-flow-scripts/flow/Makefile:ro" ^
         -v "!PARENT_ABS!:/workspace" ^
         "%IMAGE%" oproad-runner new "%~2" "%~3" "%~4" /workspace
     exit /b %ERRORLEVEL%
@@ -98,6 +108,10 @@ if "%CMD%"=="delete" (
         -e "OPROAD_RUNNER=local" ^
         -e "OPROAD_DOCKER_TTY=0" ^
         -e "OPROAD_FINISH_MODE=%FINISH_MODE%" ^
+        -e "OPROAD_REUSE_OUTPUTS=%REUSE_OUTPUTS%" ^
+        -v "%REPO_ROOT%\container\runner.sh:/usr/local/bin/oproad-runner:ro" ^
+        -v "%REPO_ROOT%\flow\scripts:/OpenROAD-flow-scripts/flow/scripts:ro" ^
+        -v "%REPO_ROOT%\flow\Makefile:/OpenROAD-flow-scripts/flow/Makefile:ro" ^
         -v "!PROJECT_PARENT!:/workspace" ^
         "%IMAGE%" oproad-runner delete "/workspace/!PROJECT_NAME!"
     exit /b %ERRORLEVEL%
@@ -110,6 +124,10 @@ if "%CMD%"=="shell" (
         -e "OPROAD_RUNNER=local" ^
         -e "OPROAD_DOCKER_TTY=0" ^
         -e "OPROAD_FINISH_MODE=%FINISH_MODE%" ^
+        -e "OPROAD_REUSE_OUTPUTS=%REUSE_OUTPUTS%" ^
+        -v "%REPO_ROOT%\container\runner.sh:/usr/local/bin/oproad-runner:ro" ^
+        -v "%REPO_ROOT%\flow\scripts:/OpenROAD-flow-scripts/flow/scripts:ro" ^
+        -v "%REPO_ROOT%\flow\Makefile:/OpenROAD-flow-scripts/flow/Makefile:ro" ^
         -v "!WORK_ABS!:/workspace" ^
         "%IMAGE%" bash
     exit /b %ERRORLEVEL%
@@ -126,6 +144,10 @@ docker run --rm -i --platform "!RESOLVED_PLATFORM!" ^
     -e "OPROAD_RUNNER=local" ^
     -e "OPROAD_DOCKER_TTY=0" ^
     -e "OPROAD_FINISH_MODE=%FINISH_MODE%" ^
+    -e "OPROAD_REUSE_OUTPUTS=%REUSE_OUTPUTS%" ^
+    -v "%REPO_ROOT%\container\runner.sh:/usr/local/bin/oproad-runner:ro" ^
+    -v "%REPO_ROOT%\flow\scripts:/OpenROAD-flow-scripts/flow/scripts:ro" ^
+    -v "%REPO_ROOT%\flow\Makefile:/OpenROAD-flow-scripts/flow/Makefile:ro" ^
     -v "!PROJECT_ABS!:/project" ^
     "%IMAGE%" oproad-runner "%CMD%" /project
 exit /b %ERRORLEVEL%
@@ -234,6 +256,7 @@ echo   OPROAD_IMAGE            Docker image tag, default: oproad:latest
 echo   OPROAD_ORFS_BASE_IMAGE  ORFS base image, default: openroad/orfs:latest
 echo   OPROAD_DOCKER_PLATFORM  Docker platform, default: auto
 echo   OPROAD_FINISH_MODE      auto, light, full, or skip
+echo   OPROAD_REUSE_OUTPUTS    Reuse existing project outputs before make, default: 1
 echo.
 echo Examples:
 echo   oproad.cmd build-image latest auto

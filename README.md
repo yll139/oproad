@@ -191,6 +191,17 @@ Print the current timing/report summary:
 ./oproad report ./projects/<design>
 ```
 
+Use the health checks in the report before comparing designs:
+
+- `STA health result: PASS` means timing has linked the top module, read Liberty
+  and SDC, found constrained paths, and did not report unclocked or
+  unconstrained endpoints.
+- `Area health result: PASS` means summed netlist cell area has full Liberty
+  coverage and matches the native Yosys/OpenROAD area report.
+- Synthesis timing is pre-layout and useful for architecture exploration. Use
+  implementation timing for routed timing; the report warns when final SPEF
+  parasitics are missing.
+
 Run the physical implementation flow:
 
 ```bash
@@ -289,4 +300,3 @@ Seen from the parent directory that contains the clone, the same project path is
 `oproad/projects/test`.
 
 See [docs-vscode.md](./docs-vscode.md).
-
