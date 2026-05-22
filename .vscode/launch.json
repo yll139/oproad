@@ -1,0 +1,22 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "oproad: build Docker image (Run Task)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/oproad",
+      "preLaunchTask": "oproad: build Docker image",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "oproad: open container shell (Run Task)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/oproad",
+      "args": ["shell", "${workspaceFolder}"],
+      "preLaunchTask": "oproad: open container shell",
+      "console": "integratedTerminal"
+    }
+  ]
+}

@@ -1,0 +1,140 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "oproad: build Docker image",
+      "type": "shell",
+      "command": "${workspaceFolder}/oproad",
+      "args": ["build-image"],
+      "windows": { "command": "${workspaceFolder}\\oproad.cmd" },
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always" },
+      "problemMatcher": []
+    },
+    {
+      "label": "oproad: new project",
+      "type": "shell",
+      "command": "${workspaceFolder}/oproad",
+      "args": ["new", "${input:platform}", "${input:design}", "${input:freq}", "${workspaceFolder}/projects"],
+      "windows": { "command": "${workspaceFolder}\\oproad.cmd" },
+      "group": "build",
+      "presentation": { "reveal": "always" },
+      "problemMatcher": []
+    },
+    {
+      "label": "oproad: simulate",
+      "type": "shell",
+      "command": "${workspaceFolder}/oproad",
+      "args": ["sim", "${input:projectDir}"],
+      "windows": { "command": "${workspaceFolder}\\oproad.cmd" },
+      "group": "test",
+      "presentation": { "reveal": "always" },
+      "problemMatcher": []
+    },
+    {
+      "label": "oproad: synthesize",
+      "type": "shell",
+      "command": "${workspaceFolder}/oproad",
+      "args": ["synth", "${input:projectDir}"],
+      "windows": { "command": "${workspaceFolder}\\oproad.cmd" },
+      "group": "build",
+      "presentation": { "reveal": "always" },
+      "problemMatcher": []
+    },
+    {
+      "label": "oproad: report",
+      "type": "shell",
+      "command": "${workspaceFolder}/oproad",
+      "args": ["report", "${input:projectDir}"],
+      "windows": { "command": "${workspaceFolder}\\oproad.cmd" },
+      "group": "test",
+      "presentation": { "reveal": "always" },
+      "problemMatcher": []
+    },
+    {
+      "label": "oproad: implement",
+      "type": "shell",
+      "command": "${workspaceFolder}/oproad",
+      "args": ["implement", "${input:projectDir}"],
+      "windows": { "command": "${workspaceFolder}\\oproad.cmd" },
+      "group": "build",
+      "presentation": { "reveal": "always" },
+      "problemMatcher": []
+    },
+    {
+      "label": "oproad: clean project",
+      "type": "shell",
+      "command": "${workspaceFolder}/oproad",
+      "args": ["clean", "${input:projectDir}"],
+      "windows": { "command": "${workspaceFolder}\\oproad.cmd" },
+      "presentation": { "reveal": "always" },
+      "problemMatcher": []
+    },
+    {
+      "label": "oproad: delete project",
+      "type": "shell",
+      "command": "${workspaceFolder}/oproad",
+      "args": ["delete", "${input:projectDir}"],
+      "windows": { "command": "${workspaceFolder}\\oproad.cmd" },
+      "presentation": { "reveal": "always" },
+      "problemMatcher": []
+    },
+    {
+      "label": "oproad: open container shell",
+      "type": "shell",
+      "command": "${workspaceFolder}/oproad",
+      "args": ["shell", "${workspaceFolder}"],
+      "windows": { "command": "${workspaceFolder}\\oproad.cmd" },
+      "presentation": { "reveal": "always" },
+      "problemMatcher": []
+    },
+    {
+      "label": "oproad: menu",
+      "type": "shell",
+      "command": "${workspaceFolder}/oproad",
+      "args": ["menu"],
+      "windows": { "command": "${workspaceFolder}\\oproad.cmd" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+
+    }
+  ],
+  "inputs": [
+    {
+      "id": "platform",
+      "type": "pickString",
+      "description": "Target process/platform",
+      "options": [
+        "asap7",
+        "gf180",
+        "ihp-sg13g2",
+        "nangate15",
+        "nangate45",
+        "sky130hd",
+        "sky130hs",
+        "sky130io",
+        "sky130ram"
+      ],
+      "default": "nangate45"
+    },
+    {
+      "id": "design",
+      "type": "promptString",
+      "description": "Design/project name",
+      "default": "test"
+    },
+    {
+      "id": "freq",
+      "type": "promptString",
+      "description": "Target frequency in GHz",
+      "default": "1.0"
+    },
+    {
+      "id": "projectDir",
+      "type": "promptString",
+      "description": "Project directory (set via oproad.projectDir in settings.json)",
+      "default": "${workspaceFolder}/projects/test"
+    }
+  ]
+}
