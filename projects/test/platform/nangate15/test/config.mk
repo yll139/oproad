@@ -2,7 +2,8 @@ export PLATFORM      = nangate15
 export DESIGN_NAME   = test
 
 export VERILOG_FILES = \
-    $(wildcard ./designs/src/test/rtl/*.v)
+    $(wildcard ./designs/src/test/rtl/*.v) \
+    $(wildcard ./designs/src/test/rtl/*.sv)
 
 export SDC_FILE = \
     ./designs/nangate15/test/constraint.sdc
