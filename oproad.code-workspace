@@ -1,0 +1,8 @@
+{
+    "folders": [
+        { "path": "." }
+    ],
+    "settings": {
+        "oproad.projectDir": "${workspaceFolder}/projects/test"
+    }
+}

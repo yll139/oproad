@@ -95,16 +95,22 @@ else
     fi
 fi
 
+
 # =========================================================
 # Step 3: Build Docker image
 # =========================================================
 next_step "Build Docker image"
 
-info "Running: ./oproad build-image"
-echo ""
-"$REPO_ROOT/oproad" build-image
-echo ""
-ok "Docker image build completed"
+# Check if oproad:latest image already exists
+if docker image inspect oproad:latest &>/dev/null; then
+    ok "oproad:latest Docker image already exists. Skipping build."
+else
+    info "Running: ./oproad build-image"
+    echo ""
+    "$REPO_ROOT/oproad" build-image
+    echo ""
+    ok "Docker image build completed"
+fi
 
 # Verify the image exists and show version info
 if docker image inspect oproad:latest &>/dev/null; then

@@ -41,28 +41,8 @@ After installation:
 
 ```bash
 ./oproad new nangate45 mydesign 1.0   # Create a project (will be placed in ./projects/mydesign)
-./oproad menu                          # Interactive menu for all operations
 ```
 
-## Recommended Editor: VS Code
-
-This project is designed to work best with **Visual Studio Code**. The
-repository includes built-in task definitions and an interactive button menu
-that are automatically available when you open the project in VS Code.
-
-To get started:
-
-```bash
-# Open the project in VS Code
-code oproad.code-workspace
-```
-
-Then use **Terminal → Run Task... → oproad: menu** to see clickable buttons for
-all operations — no command typing needed.
-
-VS Code also provides syntax highlighting for Verilog/SystemVerilog and
-built-in Git integration, making it the most convenient editor for this
-workflow.
 
 ---
 
@@ -87,51 +67,11 @@ Container /project/
 Host (view results, reports, logs)
 ```
 
-### Layer 1: Docker Bind Mount
+---
 
-When you run any `oproad` command, the script mounts your project directory
-into the container with `-v host_path:/project`. This means:
+## VS Code Integration
 
-- **Real-time, bidirectional** — edit a file on the host, the container sees it
-  immediately; the container writes a result, you see it on the host instantly.
-- **No manual copy** — no `docker cp` needed.
-- **Data stays on the host** — deleting the container does not delete files.
-
-### Layer 2: ORFS Directory Sync
-
-ORFS requires source files under `designs/src/<design>/` and configuration
-under `designs/<platform>/<design>/`. Before running a tool, `runner.sh`
-copies your files to these locations with `rsync`, runs the toolchain, then
-copies results back:
-
-| Project Directory | Synced To (ORFS) | Direction |
-|---|---|---|
-| `src/` | `designs/src/<design>/` | project → ORFS |
-| `platform/<plat>/<design>/` | `designs/<plat>/<design>/` | project → ORFS |
-| `results/<plat>/<design>/` | `results/<plat>/<design>/` | ORFS → project |
-| `reports/<plat>/<design>/` | `reports/<plat>/<design>/` | ORFS → project |
-| `logs/<plat>/<design>/` | `logs/<plat>/<design>/` | ORFS → project |
-| `objects/<plat>/<design>/` | `objects/<plat>/<design>/` | ORFS → project |
-
-### Project Directory Structure
-
-After creating a project, the following layout is generated:
-
-```
-projects/<design>/
-├── .asic_project          ← Platform, design name, frequency
-├── src/
-│   ├── rtl/               ← Your Verilog RTL source files
-│   ├── tb/                ← Testbenches
-│   ├── include/           ← Include files
-│   └── scripts/           ↑ Simulation / custom scripts
-├── platform/
-│   └── <platform>/
-│       └── <design>/
-│           ├── config.mk      ← ORFS build configuration
-│           └── constraint.sdc ← Timing constraints
-├── results/
-│   └── <platform>/<design>/  ← Synthesis / implementation outputs
+VS Code is recommended for the best experience. The repository includes built-in task definitions and interactive menus. Open the project in VS Code and use **Terminal → Run Task...** or the Taskbar extension for one-click operations. See [docs-vscode.md](./docs-vscode.md) for more details.
 ├── reports/
 │   └── <platform>/<design>/  ← Timing and area reports
 ├── logs/
@@ -324,49 +264,3 @@ Seen from the parent directory that contains the clone, the same project path is
 
 See [docs-vscode.md](./docs-vscode.md).
 
-## Difference From The Original Fork / Upstream ORFS
-
-This repository was forked from OpenROAD-flow-scripts, but it is no longer meant
-to be used like a normal ORFS checkout. It keeps the ORFS flow engine, scripts,
-and platform structure, while changing the installation model and the user
-interface:
-
-- Original ORFS: users may install tools in several ways and often run ORFS
-  Make targets directly.
-- This repo: users build one Docker image and then call only the host-side
-  `oproad` wrapper.
-- Original ORFS: example designs usually live inside `flow/designs`.
-- This repo: user projects live under `projects/<design>` outside the ORFS flow
-  tree.
-- Original ORFS: platform/design variables are commonly passed through Make
-  variables or design config files.
-- This repo: `oproad new` records the platform, design name, target frequency,
-  and timing unit in `.asic_project`; later commands reuse that metadata.
-- Original ORFS: cleanup usually targets ORFS build directories.
-- This repo: `oproad delete` removes both the host project and the matching
-  container-side ORFS working data, so manual folder deletion is discouraged.
-- Original ORFS: the repository contains broad development and regression
-  infrastructure.
-- This repo: the checked-in surface is trimmed toward local project creation and
-  Docker execution, while keeping the platform directories.
-- This repo adds VS Code tasks for users who prefer `Terminal -> Run Task...`
-  over command-line typing.
-- The Docker image defaults to `openroad/orfs:latest`; `oproad build-image` can
-  select another ORFS base tag/image and can auto-detect or override the Docker
-  platform.
-
-## Fork Source
-
-This repository was forked from OpenROAD-flow-scripts state:
-
-```text
-commit: bd2a6b695156e957a332e644e2c1587a74fd705f
-date:   2026-05-21T13:54:30Z
-title:  Merge pull request #4050 from The-OpenROAD-Project-staging/secure-fix_missing_para_dbmodnet
-```
-
-The Docker-only `oproad` conversion was committed on:
-
-```text
-2026-05-22T10:50:44+08:00
-```
