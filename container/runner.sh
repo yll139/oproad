@@ -51,6 +51,7 @@ OPROAD_DOCKER_TTY=${OPROAD_DOCKER_TTY:-auto}
 OPROAD_FINISH_MODE=${OPROAD_FINISH_MODE:-auto}
 OPROAD_RUNNER=${OPROAD_RUNNER:-auto}
 OPROAD_REUSE_OUTPUTS=${OPROAD_REUSE_OUTPUTS:-1}
+OPROAD_REPORT_DEEP_CHECKS=${OPROAD_REPORT_DEEP_CHECKS:-0}
 
 usage() {
     echo ""
@@ -1357,7 +1358,8 @@ logic_cells() {
             line = raw
             sub(/\/\/.*/, "", line)
 
-            if (line !~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_$]*[[:space:]]+/)
+            # Accept both normal identifiers and Yosys backslash-escaped names
+            if (line !~ /^[[:space:]]*(\\[^[:space:]]+|[A-Za-z_][A-Za-z0-9_$]*)[[:space:]]+/)
                 return ""
 
             cell = line
@@ -1368,7 +1370,7 @@ logic_cells() {
                 return ""
 
             rest = line
-            sub(/^[[:space:]]*[A-Za-z_][A-Za-z0-9_$]*[[:space:]]+/, "", rest)
+            sub(/^[[:space:]]*(\\[^[:space:]]+|[A-Za-z_][A-Za-z0-9_$]*)[[:space:]]+/, "", rest)
 
             # Yosys/OpenROAD netlists often use escaped instance names such as
             # \state[3]$_DFF_PN0_ . Match the whole escaped token up to the
@@ -1524,6 +1526,46 @@ extract_yosys_chip_area() {
     ' "$stat_file" 2>/dev/null
 }
 
+synth_stat_total_cells() {
+    local stat_file="$1"
+
+    awk '
+        /Number of cells:/ {
+            val = $NF
+        }
+        END {
+            if (val != "") print val
+        }
+    ' "$stat_file" 2>/dev/null
+}
+
+synth_stat_dff_count() {
+    local stat_file="$1"
+
+    awk '
+        /^[[:space:]]+[A-Za-z0-9_]+[[:space:]]+[0-9]+[[:space:]]*$/ {
+            cell = $1
+            count = $2
+            if (cell ~ /DFF|SDFF|LATCH|LAT/) {
+                sum += count
+            }
+        }
+        END {
+            printf "%d", sum
+        }
+    ' "$stat_file" 2>/dev/null
+}
+
+synth_stat_cell_counts() {
+    local stat_file="$1"
+
+    awk '
+        /^[[:space:]]+[A-Za-z0-9_]+[[:space:]]+[0-9]+[[:space:]]*$/ {
+            print $2, $1
+        }
+    ' "$stat_file" 2>/dev/null
+}
+
 extract_openroad_design_area() {
     local f
 
@@ -1595,8 +1637,11 @@ show_area_health_check() {
     echo ""
     echo "========== AREA HEALTH CHECK =========="
 
+    # Summed area: if 0 but native tool area exists, it's a hierarchical netlist
     if [ -n "$area" ] && awk "BEGIN {exit !(${area} > 0)}"; then
         print_health_line "PASS" "summed netlist area" "${area} μm²"
+    elif [ -n "$native_area" ] && awk "BEGIN {exit !(${native_area} > 0)}"; then
+        print_health_line "INFO" "summed netlist area" "hierarchical netlist; native tool area is authoritative"
     else
         print_health_line "FAIL" "summed netlist area" "missing or zero"
         fail=$((fail + 1))
@@ -2004,15 +2049,91 @@ fi
 # synth
 ###############################################################################
 
+show_synth_sta_summary() {
+    local run_design="${1:-$DESIGN}"
+    local TIMING_RPT="$PROJECT_ROOT/reports/${PLATFORM}/${run_design}/${BASE}/synth_sta.rpt"
+    local STAT_RPT="$PROJECT_ROOT/reports/${PLATFORM}/${run_design}/${BASE}/synth_stat.txt"
+    local HIER_STAT="$PROJECT_ROOT/reports/${PLATFORM}/${run_design}/${BASE}/synth_hier_stat.txt"
+    local TIME_UNIT=$(get_platform_time_unit)
+    [ -z "$TIME_UNIT" ] && TIME_UNIT="ns"
+
+    if [ ! -f "$TIMING_RPT" ]; then
+        echo "  (No STA report found -- run synth first)"
+        return 0
+    fi
+
+    local WNS=$(extract_last_numeric_for_key "wns" "$TIMING_RPT")
+    local TNS=$(extract_last_numeric_for_key "tns" "$TIMING_RPT")
+    local WS=$(extract_first_slack "$TIMING_RPT")
+    [ -z "$WS" ] && WS=$(extract_worst_slack_line "$TIMING_RPT")
+    [ -z "$WS" ] && [ -n "$WNS" ] && WS="$WNS"
+
+    # ---- Area: prefer flat synth_stat.txt (post ABC), fall back to hier_stat ----
+    local AREA_UM2="N/A"
+    local CELL_COUNT="N/A"
+    if [ -f "$STAT_RPT" ]; then
+        AREA_UM2=$(awk '/Chip area for (top )?module/ { printf "%.2f", $NF }' "$STAT_RPT" 2>/dev/null)
+        CELL_COUNT=$(awk '/Number of cells:/ { count=$NF; exit } END { if (count=="") print "N/A"; else print count }' "$STAT_RPT" 2>/dev/null)
+    fi
+    if [ "$AREA_UM2" = "N/A" ] && [ -f "$HIER_STAT" ]; then
+        AREA_UM2=$(awk '/Chip area for top module/ { printf "%.2f", $NF }' "$HIER_STAT" 2>/dev/null)
+        CELL_COUNT=$(awk '/Number of cells:/ { count=$NF; } END { if (count=="") print "N/A"; else print count }' "$HIER_STAT" 2>/dev/null)
+    fi
+
+    # ---- NAND2 gate equivalent (dynamic Liberty lookup) ----
+    local NAND2_AREA=""
+    local NAND2_CELL=""
+    local NAND_EQ=""
+    local NAND_PAIR
+    NAND_PAIR=$(find_nand2_cell_any 2>/dev/null || true)
+    if [ -n "$NAND_PAIR" ]; then
+        local NAND_LIB="${NAND_PAIR%%|*}"
+        NAND2_CELL="${NAND_PAIR##*|}"
+        NAND2_AREA=$(lib_cell_area "$NAND_LIB" "$NAND2_CELL" 2>/dev/null || true)
+        if [ -n "$NAND2_AREA" ] && [ "$AREA_UM2" != "N/A" ]; then
+            NAND_EQ=$(awk "BEGIN {printf \"%.2f\", ${AREA_UM2}/${NAND2_AREA}}" 2>/dev/null)
+        fi
+    fi
+
+    echo ""
+    echo "  ---------- Synthesis Results ----------"
+    echo "  Total cells        : ${CELL_COUNT:-N/A}"
+    echo "  Design area (Liberty) : ${AREA_UM2:-N/A} μm²  ← authoritative"
+    if [ -n "$NAND2_CELL" ] && [ -n "$NAND2_AREA" ]; then
+        echo "  ${NAND2_CELL} area       : ${NAND2_AREA} μm²"
+        echo "  Gate equiv (NAND2)  : ${NAND_EQ:-N/A}"
+    fi
+    echo "  WNS (setup)        : ${WNS:-N/A} ${TIME_UNIT}"
+    echo "  TNS (setup)        : ${TNS:-N/A} ${TIME_UNIT}"
+    echo "  Worst path slack   : ${WS:-N/A} ${TIME_UNIT}"
+    echo "  ----------------------------------------"
+    echo "  Accuracy: area/cells = exact | WNS/TNS = optimistic (no wire delay)"
+    echo ""
+}
+
 if [ "$CMD" = "synth" ]; then
     find_project "$2"
 
     echo ""
     echo "========================================"
-    echo "SYNTHESIS ONLY"
+    echo "SYNTHESIS + STA"
     echo "========================================"
+    echo ""
 
-    run_docker_make "synth"
+    echo "[1/2] Yosys synthesis (ABC tech-mapping)..."
+    run_docker_make "synth" || exit 1
+
+    echo ""
+    echo "[2/2] OpenSTA static timing analysis..."
+    if ! run_synthesis_sta "$DESIGN"; then
+        echo ""
+        echo "WARNING: STA failed. Check: reports/${PLATFORM}/${DESIGN}/${BASE}/synth_sta.rpt"
+    fi
+
+    echo ""
+    echo "========================================"
+    show_synth_sta_summary "$DESIGN"
+
     exit $?
 fi
 
@@ -2023,46 +2144,66 @@ fi
 if [ "$CMD" = "implement" ] || [ "$CMD" = "run" ]; then
     find_project "$2"
 
+    BASE_RPT="$PROJECT_ROOT/reports/${PLATFORM}/${DESIGN}/${BASE}"
+
     echo ""
     echo "========================================"
     echo "STAGE 1: SYNTHESIS"
+    echo "  → Yosys: RTL → gate-level netlist"
+    echo "  → OpenSTA: check logic depth, estimate frequency"
     echo "========================================"
     run_docker_make "synth" || exit 1
+    run_synthesis_sta "$DESIGN" 2>/dev/null
 
     echo ""
     echo "========================================"
     echo "STAGE 2: FLOORPLAN"
+    echo "  → Define core area, I/O pads, macro placement"
     echo "========================================"
     run_docker_make "do-floorplan" || exit 1
 
     echo ""
     echo "========================================"
     echo "STAGE 3: PLACEMENT"
+    echo "  → Place standard cells"
+    echo "  → OpenSTA: estimated wire-length delay check"
     echo "========================================"
     run_docker_make "do-place" || exit 1
 
     echo ""
     echo "========================================"
-    echo "STAGE 4: CTS"
+    echo "STAGE 4: CTS (Clock Tree Synthesis)"
+    echo "  → Build clock tree, insert buffers"
+    echo "  → OpenSTA: check clock skew, hold timing"
     echo "========================================"
     run_docker_make "do-cts" || exit 1
 
     echo ""
     echo "========================================"
     echo "STAGE 5: ROUTING"
+    echo "  → Connect all cells with metal wires"
     echo "========================================"
     run_docker_make "do-route" || exit 1
 
     echo ""
     echo "========================================"
-    echo "STAGE 6: FINISH"
+    echo "STAGE 6: FINISH + SIGN-OFF STA"
+    echo "  → Fill cells, final netlist"
+    echo "  → OpenSTA: extract real RC parasitics, full timing sign-off"
     echo "========================================"
     run_finish_stage || exit 1
 
     echo ""
     echo "========================================"
-    echo "IMPLEMENTATION FINISHED"
+    echo "IMPLEMENTATION COMPLETE"
     echo "========================================"
+    echo ""
+    echo "  Post-route sign-off report:"
+    echo "    ${BASE_RPT}/6_finish.rpt"
+    echo "  Final netlist:"
+    echo "    results/${PLATFORM}/${DESIGN}/${BASE}/6_final.v"
+    echo ""
+    echo "  Run 'oproad report' for full summary."
 
     exit 0
 fi
@@ -2178,6 +2319,18 @@ fi
 # report
 ###############################################################################
 
+show_stage_header() {
+    local stage="$1"
+    local available="$2"
+    local rpt="$3"
+    local rpt_short="$4"
+    if [ "$available" = "1" ] && [ -f "$rpt" ]; then
+        echo "  [ok]    $stage  --  $rpt_short"
+    else
+        echo "  [-----] $stage  --  not available (run 'oproad implement')"
+    fi
+}
+
 if [ "$CMD" = "report" ]; then
     find_project "$2"
 
@@ -2194,56 +2347,41 @@ if [ "$CMD" = "report" ]; then
     TIME_UNIT=$(get_platform_time_unit)
     TIME_TO_NS=$(time_unit_decl_to_ns "$TIME_UNIT_DECL")
 
-    if [ -f "${RESULT_DIR}/6_final.v" ] && [ -f "${REPORT_DIR}/6_finish.rpt" ]; then
-        REPORT_STAGE="POST-ROUTE"
-        TIMING_RPT="${REPORT_DIR}/6_finish.rpt"
-        NETLIST="${RESULT_DIR}/6_final.v"
-        REPORT_LOG="${LOG_DIR}/6_report.log"
-        STAT_RPT="${REPORT_DIR}/6_finish.rpt"
-        UNCONSTRAINED_RPT=""
-    elif [ -f "${RESULT_DIR}/1_synth.v" ]; then
-        REPORT_STAGE="SYNTHESIS"
-        NETLIST="${RESULT_DIR}/1_synth.v"
-        REPORT_LOG="${LOG_DIR}/1_1_yosys.log"
-        STAT_RPT="${REPORT_DIR}/synth_stat.txt"
-        UNCONSTRAINED_RPT="${REPORT_DIR}/synth_unconstrained_endpoints.rpt"
-
-        if ! run_synthesis_sta "$ACTIVE_DESIGN"; then
-            echo ""
-            echo "Warning: synthesis STA failed. See:"
-            echo "  reports/${PLATFORM}/${ACTIVE_DESIGN}/${BASE}/synth_sta.rpt"
-        fi
-
-        TIMING_RPT="${REPORT_DIR}/synth_sta.rpt"
-    else
-        echo ""
-        echo "ERROR: No synthesis or implementation result found in the strict project directory."
-        echo ""
-        echo "Expected:"
-        echo "  ${RESULT_DIR}/1_synth.v"
-        echo "or:"
-        echo "  ${RESULT_DIR}/6_final.v"
-        echo ""
-        echo "Available result files under current project/platform:"
-        find "$PROJECT_ROOT/results/${PLATFORM}" -path "*/${BASE}/1_synth.v" -o -path "*/${BASE}/6_final.v" 2>/dev/null || true
-        echo ""
-        echo "Please run:"
-        echo "  oproad synth"
-        echo "or:"
-        echo "  oproad implement"
-        echo ""
-        exit 1
-    fi
-
     echo ""
     echo "========================================"
     echo "PROJECT  : $PROJECT_ROOT"
     echo "PLATFORM : $PLATFORM"
     echo "DESIGN   : $ACTIVE_DESIGN"
     echo "TOP      : $(get_design_name_for_dir "$ACTIVE_DESIGN")"
-    echo "STAGE    : $REPORT_STAGE"
     echo "========================================"
+    echo ""
+    echo "Stage availability:"
+    show_stage_header "Post-Synthesis STA" "1" "${REPORT_DIR}/synth_sta.rpt" "reports/.../synth_sta.rpt"
+    show_stage_header "Post-Placement" "0" "${REPORT_DIR}/3_detailed_place.rpt" "reports/.../3_detailed_place.rpt"
+    show_stage_header "Post-CTS" "0" "${REPORT_DIR}/4_cts.rpt" "reports/.../4_cts.rpt"
+    show_stage_header "Post-Route" "0" "${REPORT_DIR}/6_finish.rpt" "reports/.../6_finish.rpt"
+    echo ""
 
+    # Determine which detailed timing to show
+    if [ -f "${RESULT_DIR}/6_final.v" ] && [ -f "${REPORT_DIR}/6_finish.rpt" ]; then
+        TIMING_RPT="${REPORT_DIR}/6_finish.rpt"
+        NETLIST="${RESULT_DIR}/6_final.v"
+        REPORT_LOG="${LOG_DIR}/6_report.log"
+        STAT_RPT="${REPORT_DIR}/6_finish.rpt"
+        UNCONSTRAINED_RPT=""
+        REPORT_STAGE="POST-ROUTE"
+    elif [ -f "${RESULT_DIR}/1_synth.v" ] && [ -f "${REPORT_DIR}/synth_sta.rpt" ]; then
+        TIMING_RPT="${REPORT_DIR}/synth_sta.rpt"
+        NETLIST="${RESULT_DIR}/1_synth.v"
+        REPORT_LOG="${LOG_DIR}/1_1_yosys.log"
+        STAT_RPT="${REPORT_DIR}/synth_stat.txt"
+        UNCONSTRAINED_RPT="${REPORT_DIR}/synth_unconstrained_endpoints.rpt"
+        REPORT_STAGE="SYNTHESIS"
+    else
+        echo "No synthesis or implementation results found."
+        echo "Run 'oproad synth' or 'oproad implement' first."
+        exit 1
+    fi
     echo ""
     echo "========== TIMING =========="
 
@@ -2266,11 +2404,19 @@ if [ "$CMD" = "report" ]; then
             RAW_UNCONSTRAINED_COUNT=$(extract_unconstrained_count "$UNCONSTRAINED_RPT")
 
             if [ -n "$RAW_UNCONSTRAINED" ] && [ -n "$RAW_UNCONSTRAINED_COUNT" ] && [ "$RAW_UNCONSTRAINED_COUNT" != "0" ]; then
-                CONST_UNCONSTRAINED_COUNT=$(count_constant_driven_unconstrained_endpoints "$NETLIST" "$UNCONSTRAINED_RPT")
+                if [ "$OPROAD_REPORT_DEEP_CHECKS" = "1" ] && [ "$RAW_UNCONSTRAINED_COUNT" -le 200 ] 2>/dev/null; then
+                    CONST_UNCONSTRAINED_COUNT=$(count_constant_driven_unconstrained_endpoints "$NETLIST" "$UNCONSTRAINED_RPT")
+                else
+                    echo "  (skipping detailed constant-driven check; set OPROAD_REPORT_DEEP_CHECKS=1 to enable)"
+                    CONST_UNCONSTRAINED_COUNT=""
+                fi
 
                 if [ "$CONST_UNCONSTRAINED_COUNT" = "$RAW_UNCONSTRAINED_COUNT" ]; then
                     UNCONSTRAINED=""
                     CONSTANT_UNCONSTRAINED_NOTE="${RAW_UNCONSTRAINED_COUNT} constant-driven endpoint(s) excluded from STA health"
+                elif [ -z "$CONST_UNCONSTRAINED_COUNT" ]; then
+                    UNCONSTRAINED=""
+                    CONSTANT_UNCONSTRAINED_NOTE="${RAW_UNCONSTRAINED_COUNT} unchecked endpoint(s); deep constant-driven check skipped for fast report"
                 else
                     UNCONSTRAINED="$RAW_UNCONSTRAINED"
                 fi
@@ -2321,7 +2467,11 @@ if [ "$CMD" = "report" ]; then
 
         if [ -n "$CONSTANT_UNCONSTRAINED_NOTE" ]; then
             echo "Setup note  : $CONSTANT_UNCONSTRAINED_NOTE"
-            echo "Note        : These endpoints are driven only by tie/constant nets."
+            if echo "$CONSTANT_UNCONSTRAINED_NOTE" | grep -q "unchecked"; then
+                echo "Note        : Fast report mode skipped the netlist-wide constant-driver scan."
+            else
+                echo "Note        : These endpoints are driven only by tie/constant nets."
+            fi
         fi
 
         if { [ -z "$TNS" ] && [ -z "$WNS" ] && [ -z "$WS" ]; } || [ -n "$NO_PATHS" ]; then
@@ -2353,7 +2503,11 @@ if [ "$CMD" = "report" ]; then
         echo "Unconstrained note: $UNCONSTRAINED"
         echo "Action            : Review the likely endpoint list above."
     elif [ -n "$CONSTANT_UNCONSTRAINED_NOTE" ]; then
-        echo "Unconstrained note: none after ignoring constant-driven endpoint(s)"
+        if echo "$CONSTANT_UNCONSTRAINED_NOTE" | grep -q "unchecked"; then
+            echo "Unconstrained note: deep endpoint classification skipped"
+        else
+            echo "Unconstrained note: none after ignoring constant-driven endpoint(s)"
+        fi
         echo "Constant endpoints: $CONSTANT_UNCONSTRAINED_NOTE"
     else
         echo "Unconstrained note: none reported by check_setup"
@@ -2464,7 +2618,11 @@ if [ "$CMD" = "report" ]; then
     AREA_REPORT="${REPORT_DIR}/area_coverage.txt"
 
     if [ -f "$NETLIST" ]; then
-        write_area_coverage_report "$NETLIST" "$AREA_REPORT" "$AREA_TOP"
+        if [ ! -f "$AREA_REPORT" ] || [ "$NETLIST" -nt "$AREA_REPORT" ]; then
+            write_area_coverage_report "$NETLIST" "$AREA_REPORT" "$AREA_TOP"
+        else
+            echo "Area cache          : using existing reports/${PLATFORM}/${ACTIVE_DESIGN}/${BASE}/area_coverage.txt"
+        fi
 
         AREA=$(grep "^AREA=" "$AREA_REPORT" 2>/dev/null | tail -1 | cut -d= -f2)
         AREA_TOTAL_INST=$(grep "^TOTAL_INST=" "$AREA_REPORT" 2>/dev/null | tail -1 | cut -d= -f2)
@@ -2477,9 +2635,15 @@ if [ "$CMD" = "report" ]; then
     fi
 
     if [ "$REPORT_STAGE" = "SYNTHESIS" ]; then
+        HIER_STAT="$PROJECT_ROOT/reports/${PLATFORM}/${ACTIVE_DESIGN}/${BASE}/synth_hier_stat.txt"
         NATIVE_AREA=$(extract_yosys_chip_area "$STAT_RPT")
         if [ -n "$NATIVE_AREA" ]; then
             NATIVE_AREA_SOURCE="Yosys synth_stat.txt"
+        else
+            NATIVE_AREA=$(extract_yosys_chip_area "$HIER_STAT")
+            if [ -n "$NATIVE_AREA" ]; then
+                NATIVE_AREA_SOURCE="Yosys synth_hier_stat.txt"
+            fi
         fi
     else
         NATIVE_AREA=$(extract_openroad_design_area \
@@ -2509,14 +2673,33 @@ if [ "$CMD" = "report" ]; then
         fi
     fi
 
-    echo "Design area         : ${AREA:-N/A} μm²"
-    echo "Area source         : ${AREA_SOURCE}"
-    echo "Area authority      : ${AREA_AUTHORITY}"
-    echo "Native tool area    : ${NATIVE_AREA:-N/A} μm²"
-    echo "Native area source  : ${NATIVE_AREA_SOURCE}"
-    echo "Area-matched cells  : ${AREA_MATCHED_INST:-0}"
-    echo "Area-unmatched cells: ${AREA_UNMATCHED_INST:-0}"
-    echo "Area coverage       : ${AREA_COVERAGE:-0.00}%"
+    # Show area: Liberty-based (Yosys) is authoritative; LEF-based (STA) shown for cross-ref
+
+    # Yosys Liberty area (authoritative for synthesis)
+    if [ "${AREA:-0}" = "0" ] || [ "${AREA:-0}" = "0.000000" ] || [ -z "$AREA" ]; then
+        echo "Design area (Liberty): ${NATIVE_AREA:-N/A} μm²  ← Yosys, authoritative"
+        echo "  Source              : ${NATIVE_AREA_SOURCE:-N/A}"
+    else
+        echo "Design area (Liberty): ${AREA} μm²  ← authoritative"
+        echo "  Source              : ${AREA_SOURCE}"
+    fi
+
+    # OpenSTA LEF area (cross-reference, typically ~8% larger due to cell footprint)
+    STA_AREA=""
+    if [ -n "$TIMING_RPT" ] && [ -f "$TIMING_RPT" ]; then
+        STA_AREA=$(grep "Design area" "$TIMING_RPT" 2>/dev/null | tail -1 | awk '{print $3}')
+        if [ -n "$STA_AREA" ]; then
+            echo "Design area (LEF)    : ${STA_AREA} u²  ← OpenSTA, includes cell bounding box"
+            echo "  Note               : LEF area is ~8% larger than Liberty. Use Liberty value."
+        fi
+    fi
+
+    # Liberty-based cell matching: skip when 0 (hierarchical netlist)
+    if [ "${AREA_MATCHED_INST:-0}" != "0" ] || [ "${AREA_UNMATCHED_INST:-0}" != "0" ]; then
+        echo "Area-matched cells  : ${AREA_MATCHED_INST:-0}"
+        echo "Area-unmatched cells: ${AREA_UNMATCHED_INST:-0}"
+        echo "Area coverage       : ${AREA_COVERAGE:-0.00}%"
+    fi
 
     if [ "$REPORT_STAGE" = "SYNTHESIS" ]; then
         echo "Utilization         : N/A for synthesis-only"
@@ -2547,22 +2730,33 @@ if [ "$CMD" = "report" ]; then
     echo ""
     echo "========== SEQUENTIAL / LOGIC CELLS =========="
 
-    DFF_COUNT=$(logic_cells "$NETLIST" "$AREA_TOP" | grep -Ei 'DFF|SDFF|DFX|LATCH|LAT' | wc -l | tr -d ' ')
-    STD_CELL_COUNT=$(logic_cells "$NETLIST" "$AREA_TOP" | wc -l | tr -d ' ')
-    CORE_LOGIC_COUNT=$(core_logic_cells "$NETLIST" "$AREA_TOP" | wc -l | tr -d ' ')
-
-    echo "DFF-like cells             : ${DFF_COUNT}"
-    echo "Standard cells             : ${STD_CELL_COUNT}"
-    echo "Core logic cells no BUF/INV: ${CORE_LOGIC_COUNT}"
-    echo "Cell count mode            : hierarchical expansion from top ${AREA_TOP}"
+    if [ "$REPORT_STAGE" = "SYNTHESIS" ] && [ -f "$STAT_RPT" ]; then
+        DFF_COUNT=$(synth_stat_dff_count "$STAT_RPT")
+        STD_CELL_COUNT=$(synth_stat_total_cells "$STAT_RPT")
+        [ -z "$DFF_COUNT" ] && DFF_COUNT=0
+        [ -z "$STD_CELL_COUNT" ] && STD_CELL_COUNT=0
+        echo "DFF-like cells             : ${DFF_COUNT}  (from synth_stat.txt)"
+        echo "Standard cells             : ${STD_CELL_COUNT}  (from synth_stat.txt)"
+    else
+        DFF_COUNT=$(logic_cells "$NETLIST" "$AREA_TOP" | grep -Ei 'DFF|SDFF|DFX|LATCH|LAT' | wc -l | tr -d ' ')
+        STD_CELL_COUNT=$(logic_cells "$NETLIST" "$AREA_TOP" | wc -l | tr -d ' ')
+        CORE_LOGIC_COUNT=$(core_logic_cells "$NETLIST" "$AREA_TOP" | wc -l | tr -d ' ')
+        echo "DFF-like cells             : ${DFF_COUNT}"
+        echo "Standard cells             : ${STD_CELL_COUNT}"
+        echo "Core logic cells no BUF/INV: ${CORE_LOGIC_COUNT}"
+    fi
+    echo "Cell count mode            : synthesis stat file when available"
     echo "Note: DFF-like cell count is register count, not exact pipeline depth."
 
     echo ""
     echo "========== NAND2 EQUIVALENT =========="
 
-    if [ -n "$AREA" ]; then
+    NAND2_AREA_SRC="${AREA:-0}"
+    if [ "${NAND2_AREA_SRC}" = "0" ] || [ "${NAND2_AREA_SRC}" = "0.000000" ]; then
+        NAND2_AREA_SRC="${NATIVE_AREA:-0}"
+    fi
+    if [ -n "$NAND2_AREA_SRC" ] && awk "BEGIN {exit !(${NAND2_AREA_SRC} > 0)}" 2>/dev/null; then
         NAND_PAIR=$(find_nand2_cell_any)
-
         if [ -n "$NAND_PAIR" ]; then
             NAND_LIB="${NAND_PAIR%%|*}"
             NAND2_CELL="${NAND_PAIR##*|}"
@@ -2570,13 +2764,12 @@ if [ "$CMD" = "report" ]; then
         else
             NAND2_AREA=""
         fi
-
         if [ -n "$NAND2_AREA" ]; then
-            NAND_EQ=$(awk "BEGIN {printf \"%.2f\", ${AREA}/${NAND2_AREA}}")
+            NAND_EQ=$(awk "BEGIN {printf \"%.2f\", ${NAND2_AREA_SRC}/${NAND2_AREA}}")
             echo "${NAND2_CELL} area              : ${NAND2_AREA} μm²"
             echo "Estimated NAND2 equivalent : ${NAND_EQ}"
             echo "NAND2 Liberty              : ${NAND_LIB#$ORFS_ROOT/}"
-            echo "Note: NAND2 equivalent = summed standard-cell area / ${NAND2_CELL} area."
+            echo "Note: NAND2 equivalent = total cell area / ${NAND2_CELL} area."
         else
             echo "NAND2-like cell area not found in platform Liberty files."
         fi
@@ -2623,7 +2816,13 @@ if [ "$CMD" = "report" ]; then
     echo ""
     echo "========== TOP 10 STANDARD CELLS WITH AREA =========="
 
-    logic_cells "$NETLIST" "$AREA_TOP" | sort | uniq -c | sort -nr | head -10 | \
+    if [ "$REPORT_STAGE" = "SYNTHESIS" ] && [ -f "$STAT_RPT" ]; then
+        TOP_CELL_COUNTS=$(synth_stat_cell_counts "$STAT_RPT")
+    else
+        TOP_CELL_COUNTS=$(logic_cells "$NETLIST" "$AREA_TOP" | sort | uniq -c | awk '{print $1, $2}')
+    fi
+
+    printf "%s\n" "$TOP_CELL_COUNTS" | sort -nr | head -10 | \
     while read COUNT CELL; do
         CELL_AREA=$(lib_cell_area_any "$CELL")
 
@@ -2637,6 +2836,67 @@ if [ "$CMD" = "report" ]; then
     done
 
     echo ""
+    # ============================================================
+    # Summary box
+    # ============================================================
+    CLK_NS="N/A"
+    CLK_GHZ="N/A"
+    if [ -f "$CLOCK_FILE" ]; then
+        CLK_NS=$(awk '{printf "%.4f", $1/1000}' "$CLOCK_FILE" 2>/dev/null)
+        CLK_GHZ=$(awk '{printf "%.2f", 1000/$1}' "$CLOCK_FILE" 2>/dev/null)
+    fi
+    [ -z "$CLK_NS" ] && CLK_NS="N/A"
+    [ -z "$CLK_GHZ" ] && CLK_GHZ="N/A"
+
+    STAGE_LABEL="📋  REPORT SUMMARY"
+    ACCURACY_TITLE=""
+    ACC1="" ACC2="" ACC3="" ACC4="" ACC5="" ACC_FOOT=""
+    if [ "$REPORT_STAGE" = "SYNTHESIS" ]; then
+        ACCURACY_TITLE="Stage: SYNTHESIS (pre-layout STA)"
+        ACC1="[exact]   Cell count     From Yosys synth_stat.txt"
+        ACC2="[exact]   Chip area      Sum of all submodule areas"
+        ACC3="[optim.]  WNS / TNS      Pre-layout, zero wire delay"
+        ACC4="[optim.]  Worst slack    No RC parasitics included"
+        ACC5="[est.]    Gate equiv     NAND2_X1 Liberty area estimate"
+        ACC_FOOT="WNS 10-30% worse after P&R. Only post-route is signoff."
+    else
+        ACCURACY_TITLE="Stage: POST-ROUTE (signoff STA)"
+        ACC1="[exact]   Cell count     From OpenROAD final netlist"
+        ACC2="[exact]   Chip area      Includes CTS buffers + filler"
+        ACC3="[signoff] WNS / TNS      Post-route, real RC parasitics"
+        ACC4="[signoff] Worst slack    Extracted SPEF-based timing"
+        ACC5="[est.]    Gate equiv     NAND2_X1 Liberty area estimate"
+        ACC_FOOT="Signoff-quality. Use these numbers for final reports."
+    fi
+
+    echo ""
+    echo "  ┌──────────────────────────────────────────────────────┐"
+    printf "  │ %-52s │\n" "  ${STAGE_LABEL}"
+    echo "  ├──────────────────────────────────────────────────────┤"
+    printf "  │  %-20s │ %-29s │\n" "PDK / platform" "${PLATFORM:-N/A}"
+    printf "  │  %-20s │ %-29s │\n" "Clock period" "${CLK_NS} ns"
+    printf "  │  %-20s │ %-29s │\n" "Clock frequency" "${CLK_GHZ} GHz"
+    echo "  ├──────────────────────────────────────────────────────┤"
+    printf "  │  %-20s │ %-29s │\n" "WNS (setup)" "${WNS:-N/A} ${TIME_UNIT}"
+    printf "  │  %-20s │ %-29s │\n" "TNS (setup)" "${TNS:-N/A} ${TIME_UNIT}"
+    printf "  │  %-20s │ %-29s │\n" "Worst slack" "${WS:-N/A} ${TIME_UNIT}"
+    echo "  ├──────────────────────────────────────────────────────┤"
+    printf "  │  %-20s │ %-29s │\n" "Design area" "${NATIVE_AREA:-${AREA:-N/A}} μm²"
+    printf "  │  %-20s │ %-29s │\n" "NAND2 equiv" "${NAND_EQ:-N/A}"
+    printf "  │  %-20s │ %-29s │\n" "DFF count" "${DFF_COUNT:-N/A}"
+    printf "  │  %-20s │ %-29s │\n" "Total cells" "${STD_CELL_COUNT:-N/A}"
+    echo "  ├──────────────────────────────────────────────────────┤"
+    printf "  │  %-52s │\n" "  ${ACCURACY_TITLE}"
+    printf "  │  %-52s │\n" "${ACC1}"
+    printf "  │  %-52s │\n" "${ACC2}"
+    printf "  │  %-52s │\n" "${ACC3}"
+    printf "  │  %-52s │\n" "${ACC4}"
+    printf "  │  %-52s │\n" "${ACC5}"
+    echo "  ├──────────────────────────────────────────────────────┤"
+    printf "  │  %-52s │\n" "${ACC_FOOT}"
+    echo "  └──────────────────────────────────────────────────────┘"
+    echo ""
+
     echo "========================================"
     exit 0
 fi

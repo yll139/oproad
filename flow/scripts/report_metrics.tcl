@@ -13,6 +13,11 @@ proc report_metrics { stage when {include_erc true} {include_clock_skew true} } 
   puts "Report metrics stage $stage, $when..."
   set filename $::env(REPORTS_DIR)/${stage}_[string map {" " "_"} $when].rpt
   set fileId [open $filename w]
+  # ================== Authority Declaration ==================
+  puts $fileId {[INFO][FLOW] Area authority: area_coverage.txt (Liberty standard-cell area)}
+  puts $fileId {[INFO][FLOW] Timing authority: OpenSTA static timing analysis (this report/log)}
+  puts $fileId {[INFO][FLOW] Structural analysis is for debugging only - not authoritative for area}
+  # ====================================================
   close $fileId
   report_puts "\n=========================================================================="
   report_puts "$when report_tns"

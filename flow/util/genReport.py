@@ -184,7 +184,14 @@ def write_report(path, content):
     """
     TODO: docs
     """
-    content = content.strip()
+    # ================== Authority Declaration ==================
+    header = (
+        "[INFO][FLOW] Area authority: area_coverage.txt (Liberty standard-cell area)\n"
+        "[INFO][FLOW] Timing authority: OpenSTA static timing analysis (this report/log)\n"
+        "[INFO][FLOW] Structural analysis is for debugging only - not authoritative for area\n"
+        "====================================================\n"
+    )
+    content = header + content.strip()
     with open(path, "w") as file:
         file.write(content)
     if args.verbose:

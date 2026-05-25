@@ -376,6 +376,12 @@ for design in designs:
 subColumns = ["Gold", "Current", "Diff (%)"]
 
 table = ""
+table += "<pre>\n"
+table += "[INFO][FLOW] Area authority: area_coverage.txt (Liberty standard-cell area)\n"
+table += "[INFO][FLOW] Timing authority: OpenSTA static timing analysis (this report/log)\n"
+table += "[INFO][FLOW] Structural analysis is for debugging only - not authoritative for area\n"
+table += "====================================================\n"
+table += "</pre>\n"
 with open(htmlOutput, "w") as f:
     # Compute summary rows
     noChangeList = list()

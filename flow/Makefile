@@ -549,6 +549,10 @@ $(RESULTS_DIR)/1_synth.sdc: $(SDC_FILE)
 do-synth:
 	mkdir -p $(RESULTS_DIR) $(LOG_DIR) $(REPORTS_DIR)
 	cp $(RESULTS_DIR)/1_1_yosys.v $(RESULTS_DIR)/1_synth.v
+	# Ensure 1_synth.sdc is available for STA.
+	cp -n $(SDC_FILE) $(RESULTS_DIR)/1_synth.sdc 2>/dev/null || true
+	# Run OpenSTA static timing analysis and write the log.
+	($(TIME_CMD) $(OPENROAD_CMD) $(SCRIPTS_DIR)/synth_metrics.tcl) 2>&1 | tee $(abspath $(LOG_DIR)/1_1_sta.log)
 
 $(RESULTS_DIR)/1_synth.v: $(RESULTS_DIR)/1_1_yosys.v
 	$(UNSET_AND_MAKE) do-synth

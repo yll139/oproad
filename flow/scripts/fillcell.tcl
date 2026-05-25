@@ -9,6 +9,8 @@ load_design 5_1_grt.odb 4_cts.sdc
 
 set_propagated_clock [all_clocks]
 
+detailed_placement
+
 filler_placement $::env(FILL_CELLS)
 check_placement
 
