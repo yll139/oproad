@@ -56,3 +56,29 @@ the generated targets get `tags = ["manual"]`.
 Each OpenROAD invocation takes `-threads <nproc>`. A wildcard
 `bazelisk test` runs designs in parallel and overcommits the host. Cap
 with `--jobs=N`.
+
+## Project-level flow knobs
+
+Designs are configured through `config.mk`. The wrapper includes the design
+configuration first and the platform configuration second, so project settings
+that must extend platform defaults should use append-style variables when
+available.
+
+Supported generic knobs added for local project tuning:
+
+- `EXTRA_DONT_USE_CELLS`: appends cells to the platform `DONT_USE_CELLS` list
+  after the platform file is included.
+- `REPAIR_DESIGN_MAX_WIRE_LENGTH`, `REPAIR_DESIGN_MAX_UTILIZATION`, and
+  `REPAIR_DESIGN_ARGS`: extend placement-stage `repair_design` without editing
+  `resize.tcl`.
+- `CTS_CLUSTER_SIZE`, `CTS_CLUSTER_DIAMETER`, `CTS_BUF_DISTANCE`, and
+  `CTS_ARGS`: tune `clock_tree_synthesis`.
+- `DETAILED_PLACEMENT_ARGS`: shared detailed-placement arguments for placement,
+  CTS legalization, and filler legalization.
+- `GLOBAL_ROUTE_ARGS`: explicit global-router arguments for bounded congestion
+  exploration.
+- `ALLOW_FILLER_ONE_SITE_GAPS`: continue past isolated one-site filler gaps on
+  platforms whose filler libraries cannot legally fill them.
+
+Keep these settings in the design or platform `config.mk` so synthesis,
+implementation, and report runs remain reproducible.

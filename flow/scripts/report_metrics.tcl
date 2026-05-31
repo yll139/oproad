@@ -36,6 +36,24 @@ proc report_metrics { stage when {include_erc true} {include_clock_skew true} } 
   report_worst_slack >> $filename
   report_worst_slack_metric >> $filename
 
+  report_puts "\n=========================================================================="
+  report_puts "$when report_hold_summary"
+  report_puts "--------------------------------------------------------------------------"
+  if {[catch {sta::time_sta_ui [sta::worst_slack_cmd "min"]} whs]} {
+    report_puts "whs N/A"
+  } elseif {$whs > 1.0e20} {
+    report_puts "whs N/A"
+  } else {
+    report_puts [format "whs %.4f" $whs]
+  }
+  if {[catch {sta::time_sta_ui [sta::total_negative_slack_cmd "min"]} ths]} {
+    report_puts "ths N/A"
+  } elseif {$ths > 1.0e20} {
+    report_puts "ths N/A"
+  } else {
+    report_puts [format "ths %.4f" $ths]
+  }
+
   if {$include_clock_skew} {
     report_puts "\n=========================================================================="
     report_puts "$when report_clock_skew"

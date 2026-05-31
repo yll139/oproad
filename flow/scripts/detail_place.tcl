@@ -13,7 +13,11 @@ proc do_dpl {} {
   set_placement_padding -global \
       -left $::env(CELL_PAD_IN_SITES_DETAIL_PLACEMENT) \
       -right $::env(CELL_PAD_IN_SITES_DETAIL_PLACEMENT)
-  detailed_placement
+  if {[info exists ::env(DETAILED_PLACEMENT_ARGS)] && $::env(DETAILED_PLACEMENT_ARGS) != ""} {
+    detailed_placement {*}$::env(DETAILED_PLACEMENT_ARGS)
+  } else {
+    detailed_placement
+  }
   
   if {[info exists ::env(ENABLE_DPO)] && $::env(ENABLE_DPO)} {
     if {[info exist ::env(DPO_MAX_DISPLACEMENT)]} {

@@ -662,6 +662,199 @@ extract_first_slack() {
     ' "$file" 2>/dev/null
 }
 
+extract_path_slack_for_delay() {
+    local delay_type="$1"
+    local file="$2"
+
+    awk -v delay_type="$delay_type" '
+        BEGIN { IGNORECASE = 1; in_section = 0 }
+        {
+            lower = tolower($0)
+
+            if (lower ~ /report_checks/ && lower ~ /-path_delay/) {
+                if (lower ~ "-path_delay[[:space:]]+" delay_type) {
+                    in_section = 1
+                } else if (in_section) {
+                    exit
+                }
+            }
+
+            if (in_section && /slack[[:space:]]+\((MET|VIOLATED)\)/) {
+                for (i = 1; i <= NF; i++) {
+                    if ($i ~ /^[-+]?[0-9]+(\.[0-9]+)?$/) {
+                        print $i
+                        exit
+                    }
+                }
+            }
+        }
+    ' "$file" 2>/dev/null
+}
+
+extract_worst_path_slack_for_type() {
+    local path_type="$1"
+    local file="$2"
+
+    awk -v path_type="$path_type" '
+        function reset_path() {
+            in_path = 0
+            current_type = ""
+        }
+        function first_numeric_text(    i) {
+            for (i = 1; i <= NF; i++) {
+                if ($i ~ /^[-+]?[0-9]+(\.[0-9]+)?$/) {
+                    return $i
+                }
+            }
+            return ""
+        }
+        BEGIN {
+            IGNORECASE = 1
+            target = tolower(path_type)
+            reset_path()
+        }
+        /^[[:space:]]*Startpoint:/ {
+            reset_path()
+            in_path = 1
+            next
+        }
+        in_path && /^[[:space:]]*Path Type:/ {
+            line = tolower($0)
+            sub(/^.*path type:[[:space:]]*/, "", line)
+            split(line, parts, /[[:space:]]+/)
+            current_type = parts[1]
+            next
+        }
+        in_path && /slack[[:space:]]+\((MET|VIOLATED)\)/ {
+            slack_text = first_numeric_text()
+            if (slack_text != "" && current_type == target) {
+                slack_value = slack_text + 0
+                if (!found || slack_value < worst_value) {
+                    worst_value = slack_value
+                    worst_text = slack_text
+                    found = 1
+                }
+            }
+            reset_path()
+        }
+        END {
+            if (found) print worst_text
+        }
+    ' "$file" 2>/dev/null
+}
+
+extract_worst_path_arrival_for_type() {
+    local path_type="$1"
+    local file="$2"
+
+    awk -v path_type="$path_type" '
+        function reset_path() {
+            in_path = 0
+            current_type = ""
+            arrival_text = ""
+        }
+        function first_numeric_text(    i) {
+            for (i = 1; i <= NF; i++) {
+                if ($i ~ /^[-+]?[0-9]+(\.[0-9]+)?$/) {
+                    return $i
+                }
+            }
+            return ""
+        }
+        BEGIN {
+            IGNORECASE = 1
+            target = tolower(path_type)
+            reset_path()
+        }
+        /^[[:space:]]*Startpoint:/ {
+            reset_path()
+            in_path = 1
+            next
+        }
+        in_path && /^[[:space:]]*Path Type:/ {
+            line = tolower($0)
+            sub(/^.*path type:[[:space:]]*/, "", line)
+            split(line, parts, /[[:space:]]+/)
+            current_type = parts[1]
+            next
+        }
+        in_path && /data arrival time/ {
+            value_text = first_numeric_text()
+            if (value_text != "" && (value_text + 0) >= 0) {
+                arrival_text = value_text
+            }
+            next
+        }
+        in_path && /slack[[:space:]]+\((MET|VIOLATED)\)/ {
+            slack_text = first_numeric_text()
+            if (slack_text != "" && arrival_text != "" && current_type == target) {
+                slack_value = slack_text + 0
+                if (!found || slack_value < worst_value) {
+                    worst_value = slack_value
+                    worst_arrival = arrival_text
+                    found = 1
+                }
+            }
+            reset_path()
+        }
+        END {
+            if (found) print worst_arrival
+        }
+    ' "$file" 2>/dev/null
+}
+
+extract_worst_path_slack_all() {
+    local file="$1"
+
+    awk '
+        /slack[[:space:]]+\((MET|VIOLATED)\)/ {
+            for (i = 1; i <= NF; i++) {
+                if ($i ~ /^[-+]?[0-9]+(\.[0-9]+)?$/) {
+                    val = $i + 0
+                    if (!found || val < worst) {
+                        worst = val
+                        worst_text = $i
+                        found = 1
+                    }
+                    break
+                }
+            }
+        }
+        END {
+            if (found) print worst_text
+        }
+    ' "$file" 2>/dev/null
+}
+
+has_timing_path_type() {
+    local path_type="$1"
+    local file="$2"
+
+    grep -qiE "Path Type:[[:space:]]*${path_type}([[:space:]]|$)|-path_delay[[:space:]]+${path_type}([[:space:]]|$)" "$file" 2>/dev/null
+}
+
+format_timing_value() {
+    local value="$1"
+    local unit="$2"
+    local missing_text="${3:-N/A}"
+
+    if [ -n "$value" ] && [ "$value" != "N/A" ]; then
+        echo "${value} ${unit}"
+    else
+        echo "$missing_text"
+    fi
+}
+
+derive_ths_from_hold_slack() {
+    local hold_slack="$1"
+
+    if [ -n "$hold_slack" ] && [ "$hold_slack" != "N/A" ]; then
+        if awk -v v="$hold_slack" 'BEGIN { exit !(v ~ /^[-+]?[0-9]+(\.[0-9]+)?$/ && v + 0 >= 0) }' 2>/dev/null; then
+            echo "0.00"
+        fi
+    fi
+}
+
 extract_worst_slack_line() {
     local file="$1"
 
@@ -676,6 +869,45 @@ extract_worst_slack_line() {
         }
         END {
             if (val != "") print val
+        }
+    ' "$file" 2>/dev/null
+}
+
+extract_named_section_number() {
+    local section="$1"
+    local file="$2"
+
+    awk -v section="$section" '
+        BEGIN {
+            IGNORECASE = 1
+            target = tolower(section)
+            in_section = 0
+        }
+        {
+            lower = tolower($0)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", lower)
+
+            if (lower ~ /(^|[[:space:]])critical path delay[[:space:]]*$/ && lower !~ /slack div/) {
+                if (target == "critical path delay") in_section = 1
+                next
+            }
+            if (lower ~ /(^|[[:space:]])critical path slack[[:space:]]*$/) {
+                if (target == "critical path slack") in_section = 1
+                next
+            }
+
+            if (in_section) {
+                if ($0 ~ /^=+/ && seen_value_line) exit
+                if ($0 ~ /^[-]+$/ || $0 ~ /^[[:space:]]*$/) next
+
+                seen_value_line = 1
+                for (i = 1; i <= NF; i++) {
+                    if ($i ~ /^[-+]?[0-9]+(\.[0-9]+)?$/) {
+                        print $i
+                        exit
+                    }
+                }
+            }
         }
     ' "$file" 2>/dev/null
 }
@@ -987,6 +1219,8 @@ show_sta_health_check() {
     local no_paths_val="$7"
     local unclocked_val="$8"
     local unconstrained_val="$9"
+    local time_unit_label="${10:-ns}"
+    local report_stage="${11:-${REPORT_STAGE:-SYNTHESIS}}"
 
     local fail=0
     local warn=0
@@ -1023,7 +1257,9 @@ show_sta_health_check() {
     fi
 
     # 2. Liberty / SDC / top link.
-    if [ -f "$rpt" ] && grep -qiE "OPROAD_READ_LIBERTY_COUNT=|READ LIBERTY FILES|read_liberty" "$rpt" 2>/dev/null; then
+    if [ "$report_stage" = "POST-ROUTE" ]; then
+        print_health_line "PASS" "read_liberty" "handled by OpenROAD implementation flow"
+    elif [ -f "$rpt" ] && grep -qiE "OPROAD_READ_LIBERTY_COUNT=|READ LIBERTY FILES|read_liberty" "$rpt" 2>/dev/null; then
         LIB_COUNT_IN_RPT=$(grep -i "OPROAD_READ_LIBERTY_COUNT=" "$rpt" 2>/dev/null | tail -1 | sed 's/.*OPROAD_READ_LIBERTY_COUNT=//; s/[^0-9].*//')
         if [ -n "$LIB_COUNT_IN_RPT" ]; then
             print_health_line "PASS" "read_liberty" "attempted; ${LIB_COUNT_IN_RPT} file(s)"
@@ -1035,7 +1271,14 @@ show_sta_health_check() {
         warn=$((warn + 1))
     fi
 
-    if [ -f "$rpt" ] && grep -qiE "OPROAD_READ_SDC=|READ SDC|read_sdc" "$rpt" 2>/dev/null; then
+    if [ "$report_stage" = "POST-ROUTE" ]; then
+        if [ -f "$sdc" ]; then
+            print_health_line "PASS" "read_sdc" "final constraints present"
+        else
+            print_health_line "WARN" "read_sdc" "final report exists, but project SDC is missing"
+            warn=$((warn + 1))
+        fi
+    elif [ -f "$rpt" ] && grep -qiE "OPROAD_READ_SDC=|READ SDC|read_sdc" "$rpt" 2>/dev/null; then
         print_health_line "PASS" "read_sdc" "attempted"
     else
         print_health_line "WARN" "read_sdc" "not confirmed in report text"
@@ -1120,13 +1363,21 @@ show_sta_health_check() {
     fi
 
     # 5. Timing value availability.
-    local time_unit_label="${10:-ns}"
-
     if [ -n "$ws_val" ] && [ "$ws_val" != "N/A" ]; then
-        print_health_line "PASS" "worst path slack" "${ws_val} ${time_unit_label}"
+        if awk -v v="$ws_val" 'BEGIN { exit !(v + 0 < 0) }' 2>/dev/null; then
+            print_health_line "FAIL" "worst path slack" "${ws_val} ${time_unit_label} (timing violation)"
+            fail=$((fail + 1))
+        else
+            print_health_line "PASS" "worst path slack" "${ws_val} ${time_unit_label}"
+        fi
     elif [ -n "$wns_val" ] && [ "$wns_val" != "N/A" ]; then
-        print_health_line "WARN" "worst path slack" "detail missing; WNS=${wns_val} ${time_unit_label}"
-        warn=$((warn + 1))
+        if awk -v v="$wns_val" 'BEGIN { exit !(v + 0 < 0) }' 2>/dev/null; then
+            print_health_line "FAIL" "worst path slack" "detail missing; WNS=${wns_val} ${time_unit_label} (timing violation)"
+            fail=$((fail + 1))
+        else
+            print_health_line "WARN" "worst path slack" "detail missing; WNS=${wns_val} ${time_unit_label}"
+            warn=$((warn + 1))
+        fi
     else
         print_health_line "FAIL" "timing slack parsed" "missing WNS/slack"
         fail=$((fail + 1))
@@ -1141,7 +1392,11 @@ show_sta_health_check() {
         echo "Meaning           : Timing is usable for exploration, but review warning items."
     else
         echo "STA health result : PASS"
-        echo "Meaning           : Synthesis STA constraints look complete for single-clock exploration."
+        if [ "$report_stage" = "POST-ROUTE" ]; then
+            echo "Meaning           : Post-route STA report is present, constrained, and non-violating."
+        else
+            echo "Meaning           : Synthesis STA constraints look complete for single-clock exploration."
+        fi
     fi
 }
 
@@ -1283,9 +1538,34 @@ report_design_area
 
 puts ""
 puts "========================================"
+puts " SYNTHESIS HOLD SUMMARY"
+puts "========================================"
+if {[catch {sta::time_sta_ui [sta::worst_slack_cmd "min"]} synth_whs]} {
+    puts "whs N/A"
+} elseif {\$synth_whs > 1.0e20} {
+    puts "whs N/A"
+} else {
+    puts [format "whs %.4f" \$synth_whs]
+}
+if {[catch {sta::time_sta_ui [sta::total_negative_slack_cmd "min"]} synth_ths]} {
+    puts "ths N/A"
+} elseif {\$synth_ths > 1.0e20} {
+    puts "ths N/A"
+} else {
+    puts [format "ths %.4f" \$synth_ths]
+}
+
+puts ""
+puts "========================================"
 puts " LONGEST SYNTHESIS PATHS"
 puts "========================================"
 report_checks -path_delay max -fields {slew cap input nets fanout} -digits 4 -group_count 10
+
+puts ""
+puts "========================================"
+puts " SHORTEST SYNTHESIS PATHS"
+puts "========================================"
+report_checks -path_delay min -fields {slew cap input nets fanout} -digits 4 -group_count 10
 
 puts ""
 puts "========================================"
@@ -1542,26 +1822,30 @@ synth_stat_total_cells() {
 synth_stat_dff_count() {
     local stat_file="$1"
 
-    awk '
-        /^[[:space:]]+[A-Za-z0-9_]+[[:space:]]+[0-9]+[[:space:]]*$/ {
-            cell = $1
-            count = $2
-            if (cell ~ /DFF|SDFF|LATCH|LAT/) {
-                sum += count
-            }
-        }
-        END {
-            printf "%d", sum
-        }
-    ' "$stat_file" 2>/dev/null
+    synth_stat_cell_counts "$stat_file" | \
+        awk '$2 ~ /DFF|SDFF|LATCH|LAT/ { sum += $1 } END { printf "%d", sum }'
 }
 
 synth_stat_cell_counts() {
     local stat_file="$1"
 
     awk '
-        /^[[:space:]]+[A-Za-z0-9_]+[[:space:]]+[0-9]+[[:space:]]*$/ {
-            print $2, $1
+        /Number of cells:/ {
+            delete cells
+            in_cells = 1
+            next
+        }
+        in_cells && /^[[:space:]]+[^[:space:]]+[[:space:]]+[0-9]+[[:space:]]*$/ {
+            cells[$1] = $2
+            next
+        }
+        in_cells && NF == 0 {
+            in_cells = 0
+        }
+        END {
+            for (cell in cells) {
+                print cells[cell], cell
+            }
         }
     ' "$stat_file" 2>/dev/null
 }
@@ -1571,7 +1855,8 @@ extract_openroad_design_area() {
 
     for f in "$@"; do
         [ -f "$f" ] || continue
-        awk '
+        local val
+        val=$(awk '
             /"[^"]*design__instance__area"[[:space:]]*:/ {
                 line = $0
                 sub(/^.*:[[:space:]]*/, "", line)
@@ -1590,8 +1875,12 @@ extract_openroad_design_area() {
             END {
                 if (val != "") print val
             }
-        ' "$f" 2>/dev/null
-    done | tail -1
+        ' "$f" 2>/dev/null)
+        if [ -n "$val" ]; then
+            echo "$val"
+            return 0
+        fi
+    done
 }
 
 extract_openroad_utilization() {
@@ -1599,7 +1888,8 @@ extract_openroad_utilization() {
 
     for f in "$@"; do
         [ -f "$f" ] || continue
-        awk '
+        local val
+        val=$(awk '
             /"[^"]*design__instance__utilization"[[:space:]]*:/ {
                 line = $0
                 sub(/^.*:[[:space:]]*/, "", line)
@@ -1620,8 +1910,45 @@ extract_openroad_utilization() {
             END {
                 if (val != "") print val
             }
-        ' "$f" 2>/dev/null
-    done | tail -1
+        ' "$f" 2>/dev/null)
+        if [ -n "$val" ]; then
+            echo "$val"
+            return 0
+        fi
+    done
+}
+
+extract_openroad_cell_type_count() {
+    local label="$1"
+    local f
+
+    for f in "$@"; do
+        [ -f "$f" ] || continue
+        local val
+        val=$(awk -v label="$label" '
+            BEGIN { target = tolower(label) }
+            /Cell type report:/ { in_report = 1; next }
+            in_report {
+                line = $0
+                sub(/^[[:space:]]+/, "", line)
+                sub(/[[:space:]]+[0-9]+[[:space:]]*$/, "", line)
+                if (tolower(line) == target) {
+                    print $NF
+                    exit
+                }
+                if ($0 ~ /^[[:space:]]*$/ && seen) {
+                    exit
+                }
+                if ($0 ~ /^[[:space:]]*[A-Za-z]/) {
+                    seen = 1
+                }
+            }
+        ' "$f" 2>/dev/null)
+        if [ -n "$val" ]; then
+            echo "$val"
+            return 0
+        fi
+    done
 }
 
 show_area_health_check() {
@@ -1630,12 +1957,62 @@ show_area_health_check() {
     local unmatched="$3"
     local native_area="$4"
     local native_source="$5"
+    local report_stage="${6:-SYNTHESIS}"
 
     local fail=0
     local warn=0
 
     echo ""
     echo "========== AREA HEALTH CHECK =========="
+
+    if [ "$report_stage" = "POST-ROUTE" ]; then
+        if [ -n "$native_area" ] && awk "BEGIN {exit !(${native_area} > 0)}"; then
+            print_health_line "PASS" "implemented physical area" "${native_area} μm² from ${native_source}"
+        else
+            print_health_line "FAIL" "implemented physical area" "missing final OpenROAD design area"
+            fail=$((fail + 1))
+        fi
+
+        if [ -n "$area" ] && awk "BEGIN {exit !(${area} > 0)}"; then
+            print_health_line "PASS" "logic Liberty area" "${area} μm²"
+        else
+            print_health_line "WARN" "logic Liberty area" "not available"
+            warn=$((warn + 1))
+        fi
+
+        if [ -n "$coverage" ] && awk "BEGIN {exit !(${coverage} >= 99.5)}"; then
+            print_health_line "PASS" "Liberty area coverage" "${coverage}% matched"
+        else
+            print_health_line "WARN" "Liberty area coverage" "${coverage:-0.00}% matched; unmatched=${unmatched:-0}"
+            warn=$((warn + 1))
+        fi
+
+        if [ "${unmatched:-0}" = "0" ]; then
+            print_health_line "PASS" "unmatched cells" "none"
+        else
+            print_health_line "WARN" "unmatched cells" "${unmatched} instance(s)"
+            warn=$((warn + 1))
+        fi
+
+        if [ -n "$native_area" ] && [ -n "$area" ] && \
+            awk "BEGIN {exit !(${native_area} > 0 && ${area} > 0)}"; then
+            delta_pct=$(awk "BEGIN {d=100.0*(${native_area}-${area})/${native_area}; if (d < 0) d=-d; printf \"%.3f\", d}")
+            print_health_line "INFO" "physical vs logic area" "delta=${delta_pct}%; physical area is report authority"
+        fi
+
+        echo ""
+        if [ "$fail" -gt 0 ]; then
+            echo "Area health result: FAIL (${fail} fail, ${warn} warn)"
+            echo "Meaning           : Do not use area until FAIL items are fixed."
+        elif [ "$warn" -gt 0 ]; then
+            echo "Area health result: WARN (${warn} warn)"
+            echo "Meaning           : Implemented area is available, but review warning items."
+        else
+            echo "Area health result: PASS"
+            echo "Meaning           : Area is based on final OpenROAD implementation data."
+        fi
+        return
+    fi
 
     # Summed area: if 0 but native tool area exists, it's a hierarchical netlist
     if [ -n "$area" ] && awk "BEGIN {exit !(${area} > 0)}"; then
@@ -2049,74 +2426,12 @@ fi
 # synth
 ###############################################################################
 
-show_synth_sta_summary() {
-    local run_design="${1:-$DESIGN}"
-    local TIMING_RPT="$PROJECT_ROOT/reports/${PLATFORM}/${run_design}/${BASE}/synth_sta.rpt"
-    local STAT_RPT="$PROJECT_ROOT/reports/${PLATFORM}/${run_design}/${BASE}/synth_stat.txt"
-    local HIER_STAT="$PROJECT_ROOT/reports/${PLATFORM}/${run_design}/${BASE}/synth_hier_stat.txt"
-    local TIME_UNIT=$(get_platform_time_unit)
-    [ -z "$TIME_UNIT" ] && TIME_UNIT="ns"
-
-    if [ ! -f "$TIMING_RPT" ]; then
-        echo "  (No STA report found -- run synth first)"
-        return 0
-    fi
-
-    local WNS=$(extract_last_numeric_for_key "wns" "$TIMING_RPT")
-    local TNS=$(extract_last_numeric_for_key "tns" "$TIMING_RPT")
-    local WS=$(extract_first_slack "$TIMING_RPT")
-    [ -z "$WS" ] && WS=$(extract_worst_slack_line "$TIMING_RPT")
-    [ -z "$WS" ] && [ -n "$WNS" ] && WS="$WNS"
-
-    # ---- Area: prefer flat synth_stat.txt (post ABC), fall back to hier_stat ----
-    local AREA_UM2="N/A"
-    local CELL_COUNT="N/A"
-    if [ -f "$STAT_RPT" ]; then
-        AREA_UM2=$(awk '/Chip area for (top )?module/ { printf "%.2f", $NF }' "$STAT_RPT" 2>/dev/null)
-        CELL_COUNT=$(awk '/Number of cells:/ { count=$NF; exit } END { if (count=="") print "N/A"; else print count }' "$STAT_RPT" 2>/dev/null)
-    fi
-    if [ "$AREA_UM2" = "N/A" ] && [ -f "$HIER_STAT" ]; then
-        AREA_UM2=$(awk '/Chip area for top module/ { printf "%.2f", $NF }' "$HIER_STAT" 2>/dev/null)
-        CELL_COUNT=$(awk '/Number of cells:/ { count=$NF; } END { if (count=="") print "N/A"; else print count }' "$HIER_STAT" 2>/dev/null)
-    fi
-
-    # ---- NAND2 gate equivalent (dynamic Liberty lookup) ----
-    local NAND2_AREA=""
-    local NAND2_CELL=""
-    local NAND_EQ=""
-    local NAND_PAIR
-    NAND_PAIR=$(find_nand2_cell_any 2>/dev/null || true)
-    if [ -n "$NAND_PAIR" ]; then
-        local NAND_LIB="${NAND_PAIR%%|*}"
-        NAND2_CELL="${NAND_PAIR##*|}"
-        NAND2_AREA=$(lib_cell_area "$NAND_LIB" "$NAND2_CELL" 2>/dev/null || true)
-        if [ -n "$NAND2_AREA" ] && [ "$AREA_UM2" != "N/A" ]; then
-            NAND_EQ=$(awk "BEGIN {printf \"%.2f\", ${AREA_UM2}/${NAND2_AREA}}" 2>/dev/null)
-        fi
-    fi
-
-    echo ""
-    echo "  ---------- Synthesis Results ----------"
-    echo "  Total cells        : ${CELL_COUNT:-N/A}"
-    echo "  Design area (Liberty) : ${AREA_UM2:-N/A} μm²  ← authoritative"
-    if [ -n "$NAND2_CELL" ] && [ -n "$NAND2_AREA" ]; then
-        echo "  ${NAND2_CELL} area       : ${NAND2_AREA} μm²"
-        echo "  Gate equiv (NAND2)  : ${NAND_EQ:-N/A}"
-    fi
-    echo "  WNS (setup)        : ${WNS:-N/A} ${TIME_UNIT}"
-    echo "  TNS (setup)        : ${TNS:-N/A} ${TIME_UNIT}"
-    echo "  Worst path slack   : ${WS:-N/A} ${TIME_UNIT}"
-    echo "  ----------------------------------------"
-    echo "  Accuracy: area/cells = exact | WNS/TNS = optimistic (no wire delay)"
-    echo ""
-}
-
 if [ "$CMD" = "synth" ]; then
     find_project "$2"
 
     echo ""
     echo "========================================"
-    echo "SYNTHESIS + STA"
+    echo "SYNTHESIS"
     echo "========================================"
     echo ""
 
@@ -2124,15 +2439,11 @@ if [ "$CMD" = "synth" ]; then
     run_docker_make "synth" || exit 1
 
     echo ""
-    echo "[2/2] OpenSTA static timing analysis..."
-    if ! run_synthesis_sta "$DESIGN"; then
-        echo ""
-        echo "WARNING: STA failed. Check: reports/${PLATFORM}/${DESIGN}/${BASE}/synth_sta.rpt"
-    fi
-
-    echo ""
     echo "========================================"
-    show_synth_sta_summary "$DESIGN"
+    echo "STAGE 2: AUTO REPORT"
+    echo "========================================"
+    echo "Running post-synthesis summary for this project..."
+    "$0" report "$PROJECT_ROOT"
 
     exit $?
 fi
@@ -2150,10 +2461,9 @@ if [ "$CMD" = "implement" ] || [ "$CMD" = "run" ]; then
     echo "========================================"
     echo "STAGE 1: SYNTHESIS"
     echo "  → Yosys: RTL → gate-level netlist"
-    echo "  → OpenSTA: check logic depth, estimate frequency"
+    echo "  → Flow report: synthesis timing and area metrics"
     echo "========================================"
     run_docker_make "synth" || exit 1
-    run_synthesis_sta "$DESIGN" 2>/dev/null
 
     echo ""
     echo "========================================"
@@ -2203,9 +2513,13 @@ if [ "$CMD" = "implement" ] || [ "$CMD" = "run" ]; then
     echo "  Final netlist:"
     echo "    results/${PLATFORM}/${DESIGN}/${BASE}/6_final.v"
     echo ""
-    echo "  Run 'oproad report' for full summary."
+    echo "========================================"
+    echo "STAGE 7: AUTO REPORT"
+    echo "========================================"
+    echo "Running post-implementation summary for this project..."
+    "$0" report "$PROJECT_ROOT"
 
-    exit 0
+    exit $?
 fi
 
 ###############################################################################
@@ -2338,6 +2652,12 @@ if [ "$CMD" = "report" ]; then
     REPORT_DIR="$PROJECT_ROOT/reports/${PLATFORM}/${ACTIVE_DESIGN}/${BASE}"
     LOG_DIR="$PROJECT_ROOT/logs/${PLATFORM}/${ACTIVE_DESIGN}/${BASE}"
     RESULT_DIR="$PROJECT_ROOT/results/${PLATFORM}/${ACTIVE_DESIGN}/${BASE}"
+    SYNTH_TIMING_RPT="${REPORT_DIR}/1_Post_synthesis.rpt"
+    SYNTH_TIMING_SHORT="reports/.../1_Post_synthesis.rpt"
+    if [ ! -f "$SYNTH_TIMING_RPT" ] && [ -f "${REPORT_DIR}/synth_sta.rpt" ]; then
+        SYNTH_TIMING_RPT="${REPORT_DIR}/synth_sta.rpt"
+        SYNTH_TIMING_SHORT="reports/.../synth_sta.rpt"
+    fi
 
     CLOCK_FILE="${RESULT_DIR}/clock_period.txt"
     SDC_FILE="$PROJECT_ROOT/platform/${PLATFORM}/${ACTIVE_DESIGN}/constraint.sdc"
@@ -2356,10 +2676,10 @@ if [ "$CMD" = "report" ]; then
     echo "========================================"
     echo ""
     echo "Stage availability:"
-    show_stage_header "Post-Synthesis STA" "1" "${REPORT_DIR}/synth_sta.rpt" "reports/.../synth_sta.rpt"
-    show_stage_header "Post-Placement" "0" "${REPORT_DIR}/3_detailed_place.rpt" "reports/.../3_detailed_place.rpt"
-    show_stage_header "Post-CTS" "0" "${REPORT_DIR}/4_cts.rpt" "reports/.../4_cts.rpt"
-    show_stage_header "Post-Route" "0" "${REPORT_DIR}/6_finish.rpt" "reports/.../6_finish.rpt"
+    show_stage_header "Post-Synthesis STA" "1" "$SYNTH_TIMING_RPT" "$SYNTH_TIMING_SHORT"
+    show_stage_header "Post-Placement" "1" "${REPORT_DIR}/3_detailed_place.rpt" "reports/.../3_detailed_place.rpt"
+    show_stage_header "Post-CTS" "1" "${REPORT_DIR}/4_cts_final.rpt" "reports/.../4_cts_final.rpt"
+    show_stage_header "Post-Route" "1" "${REPORT_DIR}/6_finish.rpt" "reports/.../6_finish.rpt"
     echo ""
 
     # Determine which detailed timing to show
@@ -2370,8 +2690,8 @@ if [ "$CMD" = "report" ]; then
         STAT_RPT="${REPORT_DIR}/6_finish.rpt"
         UNCONSTRAINED_RPT=""
         REPORT_STAGE="POST-ROUTE"
-    elif [ -f "${RESULT_DIR}/1_synth.v" ] && [ -f "${REPORT_DIR}/synth_sta.rpt" ]; then
-        TIMING_RPT="${REPORT_DIR}/synth_sta.rpt"
+    elif [ -f "${RESULT_DIR}/1_synth.v" ] && [ -f "$SYNTH_TIMING_RPT" ]; then
+        TIMING_RPT="$SYNTH_TIMING_RPT"
         NETLIST="${RESULT_DIR}/1_synth.v"
         REPORT_LOG="${LOG_DIR}/1_1_yosys.log"
         STAT_RPT="${REPORT_DIR}/synth_stat.txt"
@@ -2382,16 +2702,60 @@ if [ "$CMD" = "report" ]; then
         echo "Run 'oproad synth' or 'oproad implement' first."
         exit 1
     fi
+
+    echo "Report stage       : ${REPORT_STAGE}"
+    if [ "$REPORT_STAGE" = "POST-ROUTE" ]; then
+        missing_impl=0
+        for artifact in \
+            "${RESULT_DIR}/6_final.v" \
+            "${RESULT_DIR}/6_final.def" \
+            "${RESULT_DIR}/6_final.odb" \
+            "${RESULT_DIR}/6_final.sdc" \
+            "${REPORT_DIR}/6_finish.rpt"; do
+            if [ ! -f "$artifact" ]; then
+                missing_impl=$((missing_impl + 1))
+            fi
+        done
+
+        if [ "$missing_impl" -eq 0 ]; then
+            echo "Implementation result : PASS"
+            echo "Implementation data   : final routed artifacts present"
+        else
+            echo "Implementation result : FAIL (${missing_impl} artifact(s) missing)"
+            echo "Implementation data   : incomplete final routed artifacts"
+        fi
+    else
+        echo "Implementation result : NOT_RUN"
+        echo "Implementation data   : using synthesis-only artifacts"
+    fi
     echo ""
     echo "========== TIMING =========="
 
     if [ -n "$TIMING_RPT" ] && [ -f "$TIMING_RPT" ]; then
         TNS=$(extract_last_numeric_for_key "tns" "$TIMING_RPT")
         WNS=$(extract_last_numeric_for_key "wns" "$TIMING_RPT")
-        WS=$(extract_first_slack "$TIMING_RPT")
+        SETUP_SLACK=$(extract_worst_path_slack_for_type "max" "$TIMING_RPT")
+        [ -z "$SETUP_SLACK" ] && SETUP_SLACK=$(extract_path_slack_for_delay "max" "$TIMING_RPT")
+        [ -z "$SETUP_SLACK" ] && SETUP_SLACK=$(extract_worst_slack_line "$TIMING_RPT")
+        HOLD_SLACK=$(extract_worst_path_slack_for_type "min" "$TIMING_RPT")
+        [ -z "$HOLD_SLACK" ] && HOLD_SLACK=$(extract_path_slack_for_delay "min" "$TIMING_RPT")
+        WHS=$(extract_last_numeric_for_key "whs" "$TIMING_RPT")
+        [ -z "$WHS" ] && WHS="$HOLD_SLACK"
+        THS=$(extract_last_numeric_for_key "ths" "$TIMING_RPT")
+        [ -z "$THS" ] && THS=$(derive_ths_from_hold_slack "$WHS")
+        WS=$(extract_worst_path_slack_all "$TIMING_RPT")
+        CRITICAL_REPORT_DELAY=$(extract_named_section_number "critical path delay" "$TIMING_RPT")
+        CRITICAL_REPORT_SLACK=$(extract_named_section_number "critical path slack" "$TIMING_RPT")
+        CRITICAL_PATH_DELAY=$(extract_worst_path_arrival_for_type "max" "$TIMING_RPT")
+        [ -z "$CRITICAL_REPORT_DELAY" ] && CRITICAL_REPORT_DELAY="$CRITICAL_PATH_DELAY"
+        HOLD_SLACK_MISSING_TEXT="N/A"
+
+        if [ -z "$HOLD_SLACK" ] && ! has_timing_path_type "min" "$TIMING_RPT"; then
+            HOLD_SLACK_MISSING_TEXT="N/A (min-path report missing)"
+        fi
 
         if [ -z "$WS" ]; then
-            WS=$(extract_worst_slack_line "$TIMING_RPT")
+            WS="$SETUP_SLACK"
         fi
 
         NO_PATHS=$(grep -i "No paths found" "$TIMING_RPT" 2>/dev/null | tail -1)
@@ -2436,20 +2800,36 @@ if [ "$CMD" = "report" ]; then
     else
         TNS="N/A"
         WNS="N/A"
+        SETUP_SLACK="N/A"
+        HOLD_SLACK="N/A"
+        WHS="N/A"
+        THS="N/A"
+        HOLD_SLACK_MISSING_TEXT="N/A"
         WS="N/A"
+        CRITICAL_REPORT_DELAY=""
+        CRITICAL_REPORT_SLACK=""
+        CRITICAL_PATH_DELAY=""
         NO_PATHS=""
         UNCLOCKED=""
         UNCONSTRAINED=""
         CONSTANT_UNCONSTRAINED_NOTE=""
     fi
 
+    SETUP_SLACK_DISPLAY=$(format_timing_value "${SETUP_SLACK:-N/A}" "$TIME_UNIT" "N/A")
+    HOLD_SLACK_DISPLAY=$(format_timing_value "${HOLD_SLACK:-N/A}" "$TIME_UNIT" "${HOLD_SLACK_MISSING_TEXT:-N/A}")
+    WHS_DISPLAY=$(format_timing_value "${WHS:-N/A}" "$TIME_UNIT" "${HOLD_SLACK_MISSING_TEXT:-N/A}")
+    THS_DISPLAY=$(format_timing_value "${THS:-N/A}" "$TIME_UNIT" "N/A")
+    WS_DISPLAY=$(format_timing_value "${WS:-N/A}" "$TIME_UNIT" "N/A")
+
     echo "TNS summary        : ${TNS:-N/A} ${TIME_UNIT}"
     echo "WNS summary        : ${WNS:-N/A} ${TIME_UNIT}"
-    echo "Worst path slack   : ${WS:-N/A} ${TIME_UNIT}"
+    echo "WHS (hold)         : ${WHS_DISPLAY}"
+    echo "THS (hold)         : ${THS_DISPLAY}"
+    echo "Worst slack (all)  : ${WS_DISPLAY}"
 
     if [ "$REPORT_STAGE" = "SYNTHESIS" ]; then
         echo "Note        : synthesis STA is pre-layout and does not include routed parasitics."
-        echo "STA report  : reports/${PLATFORM}/${ACTIVE_DESIGN}/${BASE}/synth_sta.rpt"
+        echo "STA report  : ${TIMING_RPT#$PROJECT_ROOT/}"
 
         if [ -n "$NO_PATHS" ]; then
             echo "Warning     : No constrained timing paths found. Check constraint.sdc."
@@ -2482,12 +2862,20 @@ if [ "$CMD" = "report" ]; then
     if [ "$REPORT_STAGE" = "POST-ROUTE" ]; then
         if [ -f "${RESULT_DIR}/6_final.spef" ]; then
             echo "Parasitics         : SPEF found (${RESULT_DIR#$PROJECT_ROOT/}/6_final.spef)"
+            POST_ROUTE_ACCURACY_TITLE="Stage: POST-ROUTE (extracted RC STA)"
+            POST_ROUTE_ACC3="[signoff] WNS/TNS/WHS/THS Post-route, extracted RC"
+            POST_ROUTE_ACC4="[signoff] Worst slack    SPEF-based timing"
+            POST_ROUTE_FOOT="Signoff-quality. Use these numbers for final reports."
         else
-            echo "Warning            : final SPEF not found; post-route timing may not include extracted RC parasitics."
+            echo "Warning            : final SPEF not found; post-route timing uses tool-estimated routing parasitics."
+            POST_ROUTE_ACCURACY_TITLE="Stage: POST-ROUTE (estimated RC STA)"
+            POST_ROUTE_ACC3="[route]   WNS/TNS/WHS/THS Post-route, estimated RC"
+            POST_ROUTE_ACC4="[route]   Worst slack    No final SPEF available"
+            POST_ROUTE_FOOT="Exploration result; SPEF needed for signoff."
         fi
     fi
 
-    show_sta_health_check "$TIMING_RPT" "$SDC_FILE" "$(get_design_name_for_dir "$ACTIVE_DESIGN")" "$NETLIST" "${WS:-N/A}" "${WNS:-N/A}" "$NO_PATHS" "$UNCLOCKED" "$UNCONSTRAINED" "$TIME_UNIT"
+    show_sta_health_check "$TIMING_RPT" "$SDC_FILE" "$(get_design_name_for_dir "$ACTIVE_DESIGN")" "$NETLIST" "${WS:-N/A}" "${WNS:-N/A}" "$NO_PATHS" "$UNCLOCKED" "$UNCONSTRAINED" "$TIME_UNIT" "$REPORT_STAGE"
 
     echo ""
     echo "========== CONSTRAINT HEALTH =========="
@@ -2516,6 +2904,8 @@ if [ "$CMD" = "report" ]; then
     echo ""
     echo "========== CRITICAL PATH =========="
 
+    CRITICAL_DELAY_SUMMARY="N/A"
+    MAX_FREQ_GHZ="N/A"
     CLOCK_PERIOD=$(extract_clock_period "$CLOCK_FILE" "$SDC_FILE")
 
     if [ -n "$CLOCK_PERIOD" ]; then
@@ -2534,47 +2924,69 @@ if [ "$CMD" = "report" ]; then
         echo "Estimated Fmax      : N/A"
         echo "Reason              : No constrained timing paths found."
     else
-        SLACK_FOR_DELAY=""
+        SETUP_SLACK_FOR_PERIOD=""
 
-        if [ -n "$WS" ] && [ "$WS" != "N/A" ]; then
-            SLACK_FOR_DELAY="$WS"
+        if [ -n "$CRITICAL_REPORT_SLACK" ] && [ "$CRITICAL_REPORT_SLACK" != "N/A" ]; then
+            SETUP_SLACK_FOR_PERIOD="$CRITICAL_REPORT_SLACK"
+        elif [ -n "$SETUP_SLACK" ] && [ "$SETUP_SLACK" != "N/A" ]; then
+            SETUP_SLACK_FOR_PERIOD="$SETUP_SLACK"
         elif [ -n "$WNS" ] && [ "$WNS" != "N/A" ]; then
-            SLACK_FOR_DELAY="$WNS"
+            SETUP_SLACK_FOR_PERIOD="$WNS"
         fi
 
-        if [ -n "$CLOCK_PERIOD" ] && [ -n "$SLACK_FOR_DELAY" ]; then
-            CRITICAL_DELAY=$(awk "BEGIN {d=${CLOCK_PERIOD}-(${SLACK_FOR_DELAY}); if (d < 0) d=0; printf \"%.4f\", d}")
+        if [ -n "$CRITICAL_REPORT_DELAY" ] && [ "$CRITICAL_REPORT_DELAY" != "N/A" ]; then
+            CRITICAL_DELAY=$(awk "BEGIN {printf \"%.4f\", ${CRITICAL_REPORT_DELAY}}")
+            CRITICAL_DELAY_NS=$(awk "BEGIN {printf \"%.6f\", ${CRITICAL_REPORT_DELAY} * ${TIME_TO_NS}}")
 
             if awk "BEGIN {exit !(${CRITICAL_DELAY} > 0)}"; then
-                CRITICAL_DELAY_NS=$(awk "BEGIN {printf \"%.6f\", ${CRITICAL_DELAY} * ${TIME_TO_NS}}")
-                MAX_FREQ_MHZ=$(awk "BEGIN {printf \"%.2f\", 1000/${CRITICAL_DELAY_NS}}")
-                MAX_FREQ_GHZ=$(awk "BEGIN {printf \"%.4f\", 1/${CRITICAL_DELAY_NS}}")
-
                 if [ "$TIME_UNIT" = "ns" ]; then
                     echo "Critical path delay : ${CRITICAL_DELAY} ${TIME_UNIT}"
+                    CRITICAL_DELAY_SUMMARY="${CRITICAL_DELAY} ns"
                 else
                     echo "Critical path delay : ${CRITICAL_DELAY} ${TIME_UNIT} (${CRITICAL_DELAY_NS} ns)"
+                    CRITICAL_DELAY_SUMMARY="${CRITICAL_DELAY_NS} ns"
+                fi
+            else
+                echo "Critical path delay : N/A"
+            fi
+        else
+            echo "Critical path delay : N/A"
+        fi
+
+        if [ -n "$CLOCK_PERIOD" ] && [ -n "$SETUP_SLACK_FOR_PERIOD" ]; then
+            SETUP_LIMITED_PERIOD=$(awk "BEGIN {d=${CLOCK_PERIOD}-(${SETUP_SLACK_FOR_PERIOD}); if (d < 0) d=0; printf \"%.4f\", d}")
+
+            if awk "BEGIN {exit !(${SETUP_LIMITED_PERIOD} > 0)}"; then
+                SETUP_LIMITED_PERIOD_NS=$(awk "BEGIN {printf \"%.6f\", ${SETUP_LIMITED_PERIOD} * ${TIME_TO_NS}}")
+                MAX_FREQ_MHZ=$(awk "BEGIN {printf \"%.2f\", 1000/${SETUP_LIMITED_PERIOD_NS}}")
+                MAX_FREQ_GHZ=$(awk "BEGIN {printf \"%.4f\", 1/${SETUP_LIMITED_PERIOD_NS}}")
+
+                if [ "$TIME_UNIT" = "ns" ]; then
+                    echo "Setup-limited period: ${SETUP_LIMITED_PERIOD} ${TIME_UNIT}"
+                else
+                    echo "Setup-limited period: ${SETUP_LIMITED_PERIOD} ${TIME_UNIT} (${SETUP_LIMITED_PERIOD_NS} ns)"
                 fi
                 echo "Estimated Fmax      : ${MAX_FREQ_MHZ} MHz (${MAX_FREQ_GHZ} GHz)"
-                echo "Slack used          : ${SLACK_FOR_DELAY} ${TIME_UNIT}"
+                echo "Fmax basis          : setup-limited period"
+                echo "Slack used          : ${SETUP_SLACK_FOR_PERIOD} ${TIME_UNIT}"
             else
-                echo "Critical path delay : 0.0000 ${TIME_UNIT}"
+                echo "Setup-limited period: 0.0000 ${TIME_UNIT}"
                 echo "Estimated Fmax      : N/A"
             fi
         else
-            echo "Critical path data  : N/A"
+            echo "Setup-limited period: N/A"
             echo "Estimated Fmax      : N/A"
         fi
     fi
 
     echo ""
-    echo "========== WORST PATH SUMMARY =========="
+    echo "========== OVERALL WORST PATH SUMMARY =========="
 
     if [ -n "$NO_PATHS" ]; then
         echo "No constrained worst path was reported."
         echo "Use the diagnostics above to debug missing SDC constraints."
     elif [ -n "$TIMING_RPT" ] && [ -f "$TIMING_RPT" ]; then
-        grep -nE "Startpoint:|Endpoint:|data arrival time|slack \((MET|VIOLATED)\)" "$TIMING_RPT" | head -20
+        grep -nE "Startpoint:|Endpoint:|Path Type:|data arrival time|slack \((MET|VIOLATED)\)" "$TIMING_RPT" | head -24
 
         START_LINE=$(grep -n "Startpoint:" "$TIMING_RPT" | head -1 | cut -d: -f1)
         if [ -n "$START_LINE" ]; then
@@ -2673,20 +3085,38 @@ if [ "$CMD" = "report" ]; then
         fi
     fi
 
-    # Show area: Liberty-based (Yosys) is authoritative; LEF-based (STA) shown for cross-ref
+    REPORT_AREA=""
+    REPORT_AREA_SOURCE=""
 
-    # Yosys Liberty area (authoritative for synthesis)
-    if [ "${AREA:-0}" = "0" ] || [ "${AREA:-0}" = "0.000000" ] || [ -z "$AREA" ]; then
-        echo "Design area (Liberty): ${NATIVE_AREA:-N/A} μm²  ← Yosys, authoritative"
-        echo "  Source              : ${NATIVE_AREA_SOURCE:-N/A}"
+    if [ "$REPORT_STAGE" = "POST-ROUTE" ] && [ -n "$NATIVE_AREA" ]; then
+        REPORT_AREA="$NATIVE_AREA"
+        REPORT_AREA_SOURCE="$NATIVE_AREA_SOURCE"
+    elif [ -n "$AREA" ] && [ "$AREA" != "0" ] && [ "$AREA" != "0.000000" ]; then
+        REPORT_AREA="$AREA"
+        REPORT_AREA_SOURCE="$AREA_SOURCE"
+    else
+        REPORT_AREA="$NATIVE_AREA"
+        REPORT_AREA_SOURCE="$NATIVE_AREA_SOURCE"
+    fi
+
+    if [ "$REPORT_STAGE" = "POST-ROUTE" ]; then
+        echo "Implemented design area : ${REPORT_AREA:-N/A} μm²  ← OpenROAD final physical database"
+        echo "  Source                : ${REPORT_AREA_SOURCE:-N/A}"
+        if [ -n "$AREA" ] && [ "$AREA" != "0" ] && [ "$AREA" != "0.000000" ]; then
+            echo "Logic cell area          : ${AREA} μm²"
+            echo "  Source                : ${AREA_SOURCE}"
+        fi
+    elif [ "${AREA:-0}" = "0" ] || [ "${AREA:-0}" = "0.000000" ] || [ -z "$AREA" ]; then
+        echo "Design area (Liberty): ${REPORT_AREA:-N/A} μm²  ← Yosys, authoritative"
+        echo "  Source              : ${REPORT_AREA_SOURCE:-N/A}"
     else
         echo "Design area (Liberty): ${AREA} μm²  ← authoritative"
         echo "  Source              : ${AREA_SOURCE}"
     fi
 
-    # OpenSTA LEF area (cross-reference, typically ~8% larger due to cell footprint)
+    # OpenSTA/OpenROAD area cross-reference when it is not already the authority.
     STA_AREA=""
-    if [ -n "$TIMING_RPT" ] && [ -f "$TIMING_RPT" ]; then
+    if [ "$REPORT_STAGE" != "POST-ROUTE" ] && [ -n "$TIMING_RPT" ] && [ -f "$TIMING_RPT" ]; then
         STA_AREA=$(grep "Design area" "$TIMING_RPT" 2>/dev/null | tail -1 | awk '{print $3}')
         if [ -n "$STA_AREA" ]; then
             echo "Design area (LEF)    : ${STA_AREA} u²  ← OpenSTA, includes cell bounding box"
@@ -2725,10 +3155,13 @@ if [ "$CMD" = "report" ]; then
         done
     fi
 
-    show_area_health_check "${AREA:-}" "${AREA_COVERAGE:-0.00}" "${AREA_UNMATCHED_INST:-0}" "${NATIVE_AREA:-}" "$NATIVE_AREA_SOURCE"
+    show_area_health_check "${AREA:-}" "${AREA_COVERAGE:-0.00}" "${AREA_UNMATCHED_INST:-0}" "${NATIVE_AREA:-}" "$NATIVE_AREA_SOURCE" "$REPORT_STAGE"
 
     echo ""
     echo "========== SEQUENTIAL / LOGIC CELLS =========="
+
+    PHYSICAL_CELL_COUNT=""
+    SUMMARY_CELL_COUNT=""
 
     if [ "$REPORT_STAGE" = "SYNTHESIS" ] && [ -f "$STAT_RPT" ]; then
         DFF_COUNT=$(synth_stat_dff_count "$STAT_RPT")
@@ -2737,21 +3170,41 @@ if [ "$CMD" = "report" ]; then
         [ -z "$STD_CELL_COUNT" ] && STD_CELL_COUNT=0
         echo "DFF-like cells             : ${DFF_COUNT}  (from synth_stat.txt)"
         echo "Standard cells             : ${STD_CELL_COUNT}  (from synth_stat.txt)"
+        SUMMARY_CELL_COUNT="$STD_CELL_COUNT"
     else
+        PHYSICAL_CELL_COUNT=$(extract_openroad_cell_type_count "Total" \
+            "${LOG_DIR}/6_report.log" \
+            "${LOG_DIR}/6_report.json")
+        PHYSICAL_SEQ_COUNT=$(extract_openroad_cell_type_count "Sequential cell" \
+            "${LOG_DIR}/6_report.log" \
+            "${LOG_DIR}/6_report.json")
         DFF_COUNT=$(logic_cells "$NETLIST" "$AREA_TOP" | grep -Ei 'DFF|SDFF|DFX|LATCH|LAT' | wc -l | tr -d ' ')
         STD_CELL_COUNT=$(logic_cells "$NETLIST" "$AREA_TOP" | wc -l | tr -d ' ')
         CORE_LOGIC_COUNT=$(core_logic_cells "$NETLIST" "$AREA_TOP" | wc -l | tr -d ' ')
+        if [ -n "$PHYSICAL_SEQ_COUNT" ]; then
+            DFF_COUNT="$PHYSICAL_SEQ_COUNT"
+        fi
+        if [ -n "$PHYSICAL_CELL_COUNT" ]; then
+            echo "Physical cells           : ${PHYSICAL_CELL_COUNT}"
+            SUMMARY_CELL_COUNT="$PHYSICAL_CELL_COUNT"
+        else
+            SUMMARY_CELL_COUNT="$STD_CELL_COUNT"
+        fi
         echo "DFF-like cells             : ${DFF_COUNT}"
-        echo "Standard cells             : ${STD_CELL_COUNT}"
+        echo "Logic cells in netlist     : ${STD_CELL_COUNT}"
         echo "Core logic cells no BUF/INV: ${CORE_LOGIC_COUNT}"
     fi
-    echo "Cell count mode            : synthesis stat file when available"
+    if [ "$REPORT_STAGE" = "POST-ROUTE" ]; then
+        echo "Cell count mode            : OpenROAD final cell type report when available"
+    else
+        echo "Cell count mode            : synthesis stat file when available"
+    fi
     echo "Note: DFF-like cell count is register count, not exact pipeline depth."
 
     echo ""
     echo "========== NAND2 EQUIVALENT =========="
 
-    NAND2_AREA_SRC="${AREA:-0}"
+    NAND2_AREA_SRC="${REPORT_AREA:-${AREA:-0}}"
     if [ "${NAND2_AREA_SRC}" = "0" ] || [ "${NAND2_AREA_SRC}" = "0.000000" ]; then
         NAND2_AREA_SRC="${NATIVE_AREA:-0}"
     fi
@@ -2855,18 +3308,18 @@ if [ "$CMD" = "report" ]; then
         ACCURACY_TITLE="Stage: SYNTHESIS (pre-layout STA)"
         ACC1="[exact]   Cell count     From Yosys synth_stat.txt"
         ACC2="[exact]   Chip area      Sum of all submodule areas"
-        ACC3="[optim.]  WNS / TNS      Pre-layout, zero wire delay"
+        ACC3="[optim.]  WNS/TNS/WHS/THS Pre-layout, zero wire delay"
         ACC4="[optim.]  Worst slack    No RC parasitics included"
         ACC5="[est.]    Gate equiv     NAND2_X1 Liberty area estimate"
         ACC_FOOT="WNS 10-30% worse after P&R. Only post-route is signoff."
     else
-        ACCURACY_TITLE="Stage: POST-ROUTE (signoff STA)"
-        ACC1="[exact]   Cell count     From OpenROAD final netlist"
-        ACC2="[exact]   Chip area      Includes CTS buffers + filler"
-        ACC3="[signoff] WNS / TNS      Post-route, real RC parasitics"
-        ACC4="[signoff] Worst slack    Extracted SPEF-based timing"
-        ACC5="[est.]    Gate equiv     NAND2_X1 Liberty area estimate"
-        ACC_FOOT="Signoff-quality. Use these numbers for final reports."
+        ACCURACY_TITLE="${POST_ROUTE_ACCURACY_TITLE:-Stage: POST-ROUTE (STA)}"
+        ACC1="[exact]   Cell count     From OpenROAD final cell report"
+        ACC2="[exact]   Chip area      OpenROAD final physical area"
+        ACC3="${POST_ROUTE_ACC3:-[route]   WNS/TNS/WHS/THS Post-route timing}"
+        ACC4="${POST_ROUTE_ACC4:-[route]   Worst slack    Post-route timing}"
+        ACC5="[est.]    Gate equiv     Physical area / NAND2 area"
+        ACC_FOOT="${POST_ROUTE_FOOT:-Review parasitic source before final signoff.}"
     fi
 
     echo ""
@@ -2879,12 +3332,16 @@ if [ "$CMD" = "report" ]; then
     echo "  ├──────────────────────────────────────────────────────┤"
     printf "  │  %-20s │ %-29s │\n" "WNS (setup)" "${WNS:-N/A} ${TIME_UNIT}"
     printf "  │  %-20s │ %-29s │\n" "TNS (setup)" "${TNS:-N/A} ${TIME_UNIT}"
-    printf "  │  %-20s │ %-29s │\n" "Worst slack" "${WS:-N/A} ${TIME_UNIT}"
+    printf "  │  %-20s │ %-29s │\n" "WHS (hold)" "${WHS_DISPLAY:-N/A}"
+    printf "  │  %-20s │ %-29s │\n" "THS (hold)" "${THS_DISPLAY:-N/A}"
+    printf "  │  %-20s │ %-29s │\n" "Worst slack (all)" "${WS_DISPLAY:-N/A}"
+    printf "  │  %-20s │ %-29s │\n" "Critical delay" "${CRITICAL_DELAY_SUMMARY:-N/A}"
+    printf "  │  %-20s │ %-29s │\n" "Est. Fmax" "${MAX_FREQ_GHZ:-N/A} GHz"
     echo "  ├──────────────────────────────────────────────────────┤"
-    printf "  │  %-20s │ %-29s │\n" "Design area" "${NATIVE_AREA:-${AREA:-N/A}} μm²"
+    printf "  │  %-20s │ %-29s │\n" "Design area" "${REPORT_AREA:-N/A} μm²"
     printf "  │  %-20s │ %-29s │\n" "NAND2 equiv" "${NAND_EQ:-N/A}"
     printf "  │  %-20s │ %-29s │\n" "DFF count" "${DFF_COUNT:-N/A}"
-    printf "  │  %-20s │ %-29s │\n" "Total cells" "${STD_CELL_COUNT:-N/A}"
+    printf "  │  %-20s │ %-29s │\n" "Total cells" "${SUMMARY_CELL_COUNT:-${STD_CELL_COUNT:-N/A}}"
     echo "  ├──────────────────────────────────────────────────────┤"
     printf "  │  %-52s │\n" "  ${ACCURACY_TITLE}"
     printf "  │  %-52s │\n" "${ACC1}"

@@ -214,6 +214,11 @@ Clean generated flow outputs while keeping the project source:
 ./oproad clean ./projects/<design>
 ```
 
+`clean` removes generated project outputs and the matching OpenROAD-flow-scripts
+working copies used by the Docker container. Use it before collecting final
+metrics so stale synced results, reports, logs, or objects cannot affect the
+next run.
+
 After project creation, do not pass the platform again. All later commands read
 `.asic_project`.
 
@@ -251,8 +256,62 @@ The VS Code tasks call the same host-side wrapper and use the same Docker image.
 They provide button-style entries for image build, project creation, simulation,
 synthesis, report, implementation, clean, delete, and shell.
 
+### 6. Reading Results
 
-#### Console Menu (Zero Setup)
+Use `oproad report` as the metric reference after `synth` or `implement`:
+
+```bash
+./oproad report ./projects/<design>
+```
+
+The report summary includes the PDK/platform, clock period, target frequency,
+setup WNS/TNS, hold WHS/THS, worst slack across all checks, critical path delay,
+estimated Fmax, Liberty cell-area sum, NAND2 equivalent count, DFF count, and
+total standard cell count.
+
+For final comparisons, prefer:
+
+- `Design area (Liberty)`: authoritative summed standard-cell area.
+- `Estimated NAND2 equivalent`: area divided by the platform NAND2_X1 area.
+- `WNS (setup)` / `TNS (setup)`: setup violation summary. These can be `0.00`
+  when there is no violation.
+- `WHS (hold)` / `THS (hold)`: hold margin and total hold violation summary.
+- `Critical delay`: OpenSTA's reported setup critical-path arrival/delay.
+- `Worst slack (all)`: includes min-delay checks; review it separately from
+  setup WNS/TNS.
+
+If the report says final SPEF is missing, timing is post-route with estimated
+routing parasitics. It is still useful for exploration, but not a sign-off RC
+extraction result.
+
+### 7. Common Flow Configuration Knobs
+
+Project configuration lives in:
+
+```text
+projects/<design>/platform/<platform>/<design>/config.mk
+```
+
+Useful generic knobs supported by this wrapper and the bundled flow scripts:
+
+- `DONT_BUFFER_PORTS = 1`: skips automatic top-level port buffering for
+  block-level designs.
+- `REPAIR_DESIGN_MAX_WIRE_LENGTH`, `REPAIR_DESIGN_MAX_UTILIZATION`, and
+  `REPAIR_DESIGN_ARGS`: pass bounded options into placement-stage
+  `repair_design`.
+- `CTS_CLUSTER_SIZE`, `CTS_CLUSTER_DIAMETER`, `CTS_BUF_DISTANCE`, and
+  `CTS_ARGS`: tune clock-tree synthesis.
+- `DETAILED_PLACEMENT_ARGS`: passes options into detailed placement in the
+  placement, CTS, and filler stages.
+- `GLOBAL_ROUTE_ARGS`: passes explicit global-router options, for example a
+  bounded congestion-iteration policy.
+- `ALLOW_FILLER_ONE_SITE_GAPS = 1`: lets the flow continue when the platform has
+  no legal filler for isolated one-site gaps.
+- `EXTRA_DONT_USE_CELLS`: appends project-specific cells to the platform
+  `DONT_USE_CELLS` list without replacing platform defaults.
+
+
+### 8. Console Menu (Zero Setup)
 
 For a simple interactive console menu in the terminal, run:
 

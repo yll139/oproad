@@ -203,6 +203,12 @@ endif
 
 include $(PLATFORM_DIR)/config.mk
 
+# Allow designs to append cells to the platform-level dont-use list without
+# overriding platform defaults.  DESIGN_CONFIG is included before the platform
+# config, so direct project assignments to DONT_USE_CELLS can be replaced by
+# platform defaults.
+export DONT_USE_CELLS += $(EXTRA_DONT_USE_CELLS)
+
 # Enables hierarchical yosys
 export SYNTH_HIERARCHICAL ?= 0
 export SYNTH_STOP_MODULE_SCRIPT = $(RESULTS_DIR)/keep_hierarchy.tcl
@@ -850,13 +856,19 @@ else
 $(eval $(call do-step,5_3_route,$(RESULTS_DIR)/4_cts.odb,detail_route))
 endif
 
+ifneq ($(POST_DETAIL_ROUTE_REROUTE),)
+$(eval $(call do-step,5_4_post_hold_route,$(RESULTS_DIR)/5_3_route.odb $(RESULTS_DIR)/4_cts.sdc,post_detail_route_reroute))
+POST_DETAIL_ROUTE_STEPS := do-5_4_post_hold_route
+$(eval $(call do-copy,5_route,5_4_post_hold_route.odb))
+else
 $(eval $(call do-copy,5_route,5_3_route.odb))
+endif
 
 $(eval $(call do-copy,5_route,4_cts.sdc,,.sdc))
 
 .PHONY: do-route
 do-route:
-	$(UNSET_AND_MAKE) do-5_1_grt do-5_2_fillcell do-5_3_route do-5_route do-5_route.sdc
+	$(UNSET_AND_MAKE) do-5_1_grt do-5_2_fillcell do-5_3_route $(POST_DETAIL_ROUTE_STEPS) do-5_route do-5_route.sdc
 
 .PHONY: clean_route
 clean_route:

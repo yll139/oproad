@@ -30,6 +30,18 @@ if { [info exists ::env(SLEW_MARGIN)] && $::env(SLEW_MARGIN) > 0.0} {
   puts "Slew margin $::env(SLEW_MARGIN)"
   append additional_args " -slew_margin $::env(SLEW_MARGIN)"
 }
+if { [info exists ::env(REPAIR_DESIGN_MAX_WIRE_LENGTH)] && $::env(REPAIR_DESIGN_MAX_WIRE_LENGTH) != ""} {
+  puts "Repair design max wire length $::env(REPAIR_DESIGN_MAX_WIRE_LENGTH)"
+  append additional_args " -max_wire_length $::env(REPAIR_DESIGN_MAX_WIRE_LENGTH)"
+}
+if { [info exists ::env(REPAIR_DESIGN_MAX_UTILIZATION)] && $::env(REPAIR_DESIGN_MAX_UTILIZATION) != ""} {
+  puts "Repair design max utilization $::env(REPAIR_DESIGN_MAX_UTILIZATION)"
+  append additional_args " -max_utilization $::env(REPAIR_DESIGN_MAX_UTILIZATION)"
+}
+if { [info exists ::env(REPAIR_DESIGN_ARGS)] && $::env(REPAIR_DESIGN_ARGS) != ""} {
+  puts "Repair design extra args $::env(REPAIR_DESIGN_ARGS)"
+  append additional_args " $::env(REPAIR_DESIGN_ARGS)"
+}
 
 repair_design {*}$additional_args
 

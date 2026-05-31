@@ -63,7 +63,11 @@ utl::pop_metrics_stage
 set_placement_padding -global \
     -left $::env(CELL_PAD_IN_SITES_DETAIL_PLACEMENT) \
     -right $::env(CELL_PAD_IN_SITES_DETAIL_PLACEMENT)
-detailed_placement
+if {[info exists ::env(DETAILED_PLACEMENT_ARGS)] && $::env(DETAILED_PLACEMENT_ARGS) != ""} {
+  detailed_placement {*}$::env(DETAILED_PLACEMENT_ARGS)
+} else {
+  detailed_placement
+}
 
 estimate_parasitics -placement
 
@@ -73,12 +77,24 @@ if {[info exist ::env(CTS_SNAPSHOTS)]} {
 
 # process user settings
 set additional_args "-verbose"
-append_env_var additional_args SETUP_SLACK_MARGIN -setup_margin 1
-append_env_var additional_args HOLD_SLACK_MARGIN -hold_margin 1
+if {[info exists ::env(CTS_SETUP_SLACK_MARGIN)]} {
+  append_env_var additional_args CTS_SETUP_SLACK_MARGIN -setup_margin 1
+} else {
+  append_env_var additional_args SETUP_SLACK_MARGIN -setup_margin 1
+}
+if {[info exists ::env(CTS_HOLD_SLACK_MARGIN)]} {
+  append_env_var additional_args CTS_HOLD_SLACK_MARGIN -hold_margin 1
+} else {
+  append_env_var additional_args HOLD_SLACK_MARGIN -hold_margin 1
+}
 append_env_var additional_args TNS_END_PERCENT -repair_tns 1
 append_env_var additional_args SKIP_PIN_SWAP -skip_pin_swap 0
 append_env_var additional_args SKIP_GATE_CLONING -skip_gate_cloning 0
 append_env_var additional_args SKIP_BUFFER_REMOVAL -skip_buffer_removal 0
+if {[info exists ::env(CTS_REPAIR_TIMING_ARGS)] && $::env(CTS_REPAIR_TIMING_ARGS) != ""} {
+  puts "CTS repair timing extra args $::env(CTS_REPAIR_TIMING_ARGS)"
+  append additional_args " $::env(CTS_REPAIR_TIMING_ARGS)"
+}
 
 if {[info exists ::env(SKIP_CTS_REPAIR_TIMING)] == 0 || $::env(SKIP_CTS_REPAIR_TIMING) == 0} {
   if {[info exists ::env(EQUIVALENCE_CHECK)] && $::env(EQUIVALENCE_CHECK) == 1} {
@@ -92,7 +108,11 @@ if {[info exists ::env(SKIP_CTS_REPAIR_TIMING)] == 0 || $::env(SKIP_CTS_REPAIR_T
       run_equivalence_test
   }
 
-  set result [catch {detailed_placement} msg]
+  if {[info exists ::env(DETAILED_PLACEMENT_ARGS)] && $::env(DETAILED_PLACEMENT_ARGS) != ""} {
+    set result [catch {detailed_placement {*}$::env(DETAILED_PLACEMENT_ARGS)} msg]
+  } else {
+    set result [catch {detailed_placement} msg]
+  }
   if {$result != 0} {
     save_progress 4_1_error
     puts "Detailed placement failed in CTS: $msg"

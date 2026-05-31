@@ -62,9 +62,34 @@ proc global_route_helper {} {
       report_metrics 5 "global route pre repair design"
     }
 
-    # Repair design using global route parasitics
+    # Repair design using global route parasitics.  Keep this aligned with
+    # resize.tcl so dense designs can bound max-wire buffering instead of
+    # letting the tool insert thousands of default-length repair buffers.
     puts "Perform buffer insertion..."
-    repair_design
+    set repair_design_args ""
+    if { [info exists ::env(CAP_MARGIN)] && $::env(CAP_MARGIN) > 0.0} {
+      puts "Cap margin $::env(CAP_MARGIN)"
+      append repair_design_args " -cap_margin $::env(CAP_MARGIN)"
+    }
+    if { [info exists ::env(SLEW_MARGIN)] && $::env(SLEW_MARGIN) > 0.0} {
+      puts "Slew margin $::env(SLEW_MARGIN)"
+      append repair_design_args " -slew_margin $::env(SLEW_MARGIN)"
+    }
+    if { [info exists ::env(REPAIR_DESIGN_MAX_WIRE_LENGTH)] && \
+         $::env(REPAIR_DESIGN_MAX_WIRE_LENGTH) != ""} {
+      puts "Repair design max wire length $::env(REPAIR_DESIGN_MAX_WIRE_LENGTH)"
+      append repair_design_args " -max_wire_length $::env(REPAIR_DESIGN_MAX_WIRE_LENGTH)"
+    }
+    if { [info exists ::env(REPAIR_DESIGN_MAX_UTILIZATION)] && \
+         $::env(REPAIR_DESIGN_MAX_UTILIZATION) != ""} {
+      puts "Repair design max utilization $::env(REPAIR_DESIGN_MAX_UTILIZATION)"
+      append repair_design_args " -max_utilization $::env(REPAIR_DESIGN_MAX_UTILIZATION)"
+    }
+    if { [info exists ::env(REPAIR_DESIGN_ARGS)] && $::env(REPAIR_DESIGN_ARGS) != ""} {
+      puts "Repair design extra args $::env(REPAIR_DESIGN_ARGS)"
+      append repair_design_args " $::env(REPAIR_DESIGN_ARGS)"
+    }
+    repair_design {*}$repair_design_args
     if {[info exist ::env(DETAILED_METRICS)]} {
       report_metrics 5 "global route post repair design"
     }
@@ -72,7 +97,11 @@ proc global_route_helper {} {
     # Running DPL to fix overlapped instances
     # Run to get modified net by DPL
     global_route -start_incremental
-    detailed_placement
+    if {[info exists ::env(DETAILED_PLACEMENT_ARGS)] && $::env(DETAILED_PLACEMENT_ARGS) != ""} {
+      detailed_placement {*}$::env(DETAILED_PLACEMENT_ARGS)
+    } else {
+      detailed_placement
+    }
     # Route only the modified net by DPL
     global_route -end_incremental -congestion_report_file $::env(REPORTS_DIR)/congestion_post_repair_design.rpt
 
@@ -82,12 +111,24 @@ proc global_route_helper {} {
 
     # process user settings
     set additional_args "-verbose"
-    append_env_var additional_args SETUP_SLACK_MARGIN -setup_margin 1
-    append_env_var additional_args HOLD_SLACK_MARGIN -hold_margin 1
+    if {[info exists ::env(GLOBAL_ROUTE_SETUP_SLACK_MARGIN)]} {
+      append_env_var additional_args GLOBAL_ROUTE_SETUP_SLACK_MARGIN -setup_margin 1
+    } else {
+      append_env_var additional_args SETUP_SLACK_MARGIN -setup_margin 1
+    }
+    if {[info exists ::env(GLOBAL_ROUTE_HOLD_SLACK_MARGIN)]} {
+      append_env_var additional_args GLOBAL_ROUTE_HOLD_SLACK_MARGIN -hold_margin 1
+    } else {
+      append_env_var additional_args HOLD_SLACK_MARGIN -hold_margin 1
+    }
     append_env_var additional_args TNS_END_PERCENT -repair_tns 1
     append_env_var additional_args SKIP_PIN_SWAP -skip_pin_swap 0
     append_env_var additional_args SKIP_GATE_CLONING -skip_gate_cloning 0
     append_env_var additional_args SKIP_BUFFER_REMOVAL -skip_buffer_removal 0
+    if {[info exists ::env(GLOBAL_ROUTE_REPAIR_TIMING_ARGS)] && $::env(GLOBAL_ROUTE_REPAIR_TIMING_ARGS) != ""} {
+      puts "Global route repair timing extra args $::env(GLOBAL_ROUTE_REPAIR_TIMING_ARGS)"
+      append additional_args " $::env(GLOBAL_ROUTE_REPAIR_TIMING_ARGS)"
+    }
     puts "repair_timing [join $additional_args " "]"
     repair_timing {*}$additional_args
 
@@ -98,7 +139,11 @@ proc global_route_helper {} {
     # Running DPL to fix overlapped instances
     # Run to get modified net by DPL
     global_route -start_incremental
-    detailed_placement
+    if {[info exists ::env(DETAILED_PLACEMENT_ARGS)] && $::env(DETAILED_PLACEMENT_ARGS) != ""} {
+      detailed_placement {*}$::env(DETAILED_PLACEMENT_ARGS)
+    } else {
+      detailed_placement
+    }
     # Route only the modified net by DPL
     global_route -end_incremental -congestion_report_file $::env(REPORTS_DIR)/congestion_post_repair_timing.rpt
   }
