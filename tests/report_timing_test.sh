@@ -144,6 +144,8 @@ reject_line() {
   fi
 }
 
+require_line "WNS (OpenSTA)     : 0.00 ps"
+require_line "Worst setup slack : 448.97 ps"
 require_line "WHS (hold)         : 3.10 ps"
 require_line "THS (hold)         : 0.00 ps"
 require_line "Worst slack (all)  : 3.10 ps"
@@ -157,6 +159,7 @@ require_line "Area health result: PASS"
 require_line "Path Type: min"
 reject_line "Critical path delay : 551.0300 ps"
 reject_line "Implemented design area : 10 μm²"
+reject_line "WNS summary        :"
 reject_line "Setup slack        :"
 reject_line "Hold slack         :"
 
@@ -246,8 +249,11 @@ ORFS_ROOT="$REPO_ROOT/flow" OPROAD_RUNNER=local bash "$REPO_ROOT/container/runne
 
 require_line "WHS (hold)         : N/A (min-path report missing)"
 require_line "THS (hold)         : N/A"
+require_line "WNS (OpenSTA)     : 0.00 ps"
+require_line "Worst setup slack : 448.9655 ps"
 require_line "Critical path delay : 532.4137 ps (0.532414 ns)"
 require_line "Setup-limited period: 551.0345 ps (0.551034 ns)"
+reject_line "WNS summary        :"
 reject_line "Setup slack        :"
 reject_line "Hold slack         :"
 reject_line "Critical path delay : N/A"

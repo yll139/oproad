@@ -265,20 +265,22 @@ Use `oproad report` as the metric reference after `synth` or `implement`:
 ```
 
 The report summary includes the PDK/platform, clock period, target frequency,
-setup WNS/TNS, hold WHS/THS, worst slack across all checks, critical path delay,
-estimated Fmax, Liberty cell-area sum, NAND2 equivalent count, DFF count, and
-total standard cell count.
+OpenSTA setup WNS/TNS, worst setup slack, hold WHS/THS, worst slack across all
+checks, critical path delay, estimated Fmax, Liberty cell-area sum, NAND2
+equivalent count, DFF count, and total standard cell count.
 
 For final comparisons, prefer:
 
 - `Design area (Liberty)`: authoritative summed standard-cell area.
 - `Estimated NAND2 equivalent`: area divided by the platform NAND2_X1 area.
-- `WNS (setup)` / `TNS (setup)`: setup violation summary. These can be `0.00`
-  when there is no violation.
+- `WNS (OpenSTA)` / `TNS (OpenSTA)`: setup violation summary. These can be
+  `0.00` when there is no setup violation.
+- `Worst setup slack`: real worst setup/max-path slack, including positive
+  margin. Use this to see how much setup timing margin remains.
 - `WHS (hold)` / `THS (hold)`: hold margin and total hold violation summary.
 - `Critical delay`: OpenSTA's reported setup critical-path arrival/delay.
 - `Worst slack (all)`: includes min-delay checks; review it separately from
-  setup WNS/TNS.
+  setup WNS/TNS and worst setup slack.
 
 If the report says final SPEF is missing, timing is post-route with estimated
 routing parasitics. It is still useful for exploration, but not a sign-off RC

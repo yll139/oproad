@@ -109,10 +109,13 @@ reject_line() {
 require_line "[1/2] Yosys synthesis (ABC tech-mapping)..."
 require_line "STAGE 2: AUTO REPORT"
 require_line "Report stage       : SYNTHESIS"
+require_line "WNS (OpenSTA)     : 0.00 ps"
+require_line "Worst setup slack : 500.00 ps"
 require_line "WHS (hold)         : 6.00 ps"
 require_line "THS (hold)         : 0.00 ps"
 reject_line "---------- Synthesis Results ----------"
 reject_line "[2/2] OpenSTA static timing analysis"
+reject_line "WNS summary        :"
 reject_line "Setup slack        :"
 reject_line "Hold slack         :"
 

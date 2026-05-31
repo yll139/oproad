@@ -64,7 +64,7 @@ require_above_or_equal() {
   fi
 }
 
-setup_slack="$(extract_metric "WNS summary")"
+setup_slack="$(extract_metric "Worst setup slack")"
 hold_slack="$(extract_metric "WHS (hold)")"
 worst_slack="$(extract_metric "Worst slack (all)")"
 clock_period_ps="$(extract_metric "Target clock period")"
@@ -72,7 +72,7 @@ nand2_equiv="$(extract_metric "Estimated NAND2 equivalent")"
 dff_count="$(extract_metric "DFF-like cells")"
 latency_cycles="$(grep -m1 -Eo 'LAT=[0-9]+' "$TMP_SIM" | cut -d= -f2)"
 
-require_nonnegative "Setup WNS" "$setup_slack"
+require_nonnegative "Worst setup slack" "$setup_slack"
 require_nonnegative "Hold WHS" "$hold_slack"
 require_nonnegative "Worst slack" "$worst_slack"
 require_above_or_equal "Hold WHS safety margin" "$hold_slack" "5"

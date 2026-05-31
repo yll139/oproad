@@ -89,9 +89,11 @@ require_line "STAGE 6: FINISH + SIGN-OFF STA"
 require_line "STAGE 7: AUTO REPORT"
 require_line "Report stage       : POST-ROUTE"
 require_line "Implementation result : PASS"
+require_line "WNS (OpenSTA)     : 0.00 ns"
+require_line "Worst setup slack : 500.00 ns"
 require_line "WHS (hold)         : 4.00 ns"
 require_line "THS (hold)         : 0.00 ns"
-if grep -Fq "Setup slack        :" "$OUT" || grep -Fq "Hold slack         :" "$OUT"; then
+if grep -Fq "WNS summary        :" "$OUT" || grep -Fq "Setup slack        :" "$OUT" || grep -Fq "Hold slack         :" "$OUT"; then
   echo "Report output should not show standalone setup/hold slack rows." >&2
   sed -n '1,240p' "$OUT" >&2
   exit 1
