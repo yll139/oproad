@@ -115,3 +115,13 @@ reject_line "---------- Synthesis Results ----------"
 reject_line "[2/2] OpenSTA static timing analysis"
 reject_line "Setup slack        :"
 reject_line "Hold slack         :"
+
+if grep -Fq "run_synthesis_sta()" "$REPO_ROOT/container/runner.sh"; then
+  echo "runner.sh should rely on the ORFS synth STA stage, not a custom synthesis STA helper." >&2
+  exit 1
+fi
+
+if grep -Fq "synth_sta.rpt" "$REPO_ROOT/container/runner.sh"; then
+  echo "runner.sh should not reference the removed custom synth_sta.rpt artifact." >&2
+  exit 1
+fi
